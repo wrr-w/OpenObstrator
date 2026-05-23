@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+
+@dataclass(frozen=True)
+class PortAlloc:
+    dashboard_start: int = 18000
+    dashboard_end: int = 18999
+    gateway_start: int = 19000
+    gateway_end: int = 19999
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    hermes_root: str | None
+    nanoghost_root: str | None
+    openclaw_root: str | None
+    shared_skills_root: str | None
+    port_alloc: PortAlloc
+    bind_host: str = "127.0.0.1"
+    bind_port: int = 8088
+
+
+def load_app_config(config_path: Path) -> AppConfig:
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    pa_raw = raw.get("port_alloc", {}) if isinstance(raw.get("port_alloc"), dict) else {}
+    port_alloc = PortAlloc(
+        dashboard_start=int(pa_raw.get("dashboard_start", 18000)),
+        dashboard_end=int(pa_raw.get("dashboard_end", 18999)),
+        gateway_start=int(pa_raw.get("gateway_start", 19000)),
+        gateway_end=int(pa_raw.get("gateway_end", 19999)),
+    )
+
+    hermes_root = raw.get("hermes_root")
+    hermes_root = str(hermes_root) if hermes_root not in (None, "", "null") else None
+    nanoghost_root = raw.get("nanoghost_root")
+    nanoghost_root = str(nanoghost_root) if nanoghost_root not in (None, "", "null") else None
+    openclaw_root = raw.get("openclaw_root")
+    openclaw_root = str(openclaw_root) if openclaw_root not in (None, "", "null") else None
+    shared_skills_root = raw.get("shared_skills_root")
+    shared_skills_root = str(shared_skills_root) if shared_skills_root not in (None, "", "null") else None
+
+    return AppConfig(
+        hermes_root=hermes_root,
+        nanoghost_root=nanoghost_root,
+        openclaw_root=openclaw_root,
+        shared_skills_root=shared_skills_root,
+        port_alloc=port_alloc,
+        bind_host=str(raw.get("bind_host") or "127.0.0.1"),
+        bind_port=int(raw.get("bind_port") or 8088),
+    )
+
+
+def resolve_hermes_root(*, config_path: Path) -> Path:
+    cfg = load_app_config(config_path)
+    if cfg.hermes_root:
+        return Path(cfg.hermes_root)
+
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    if env_home:
+        env_path = Path(env_home)
+        if env_path.parent.name == "profiles":
+            return env_path.parent.parent
+        return env_path
+
+    return Path.home() / ".hermes"
+
+
+def resolve_nanoghost_root(*, config_path: Path) -> Path:
+    cfg = load_app_config(config_path)
+    if cfg.nanoghost_root:
+        return Path(cfg.nanoghost_root)
+    return config_path.parent / "nanoghost"
+
+
+def resolve_openclaw_root(*, config_path: Path) -> Path:
+    cfg = load_app_config(config_path)
+    if cfg.openclaw_root:
+        return Path(cfg.openclaw_root)
+    return config_path.parent / "openclaw"
+
+
+def resolve_shared_skills_root(*, config_path: Path) -> Path:
+    cfg = load_app_config(config_path)
+    if cfg.shared_skills_root:
+        expanded = os.path.expanduser(os.path.expandvars(cfg.shared_skills_root))
+        return Path(expanded)
+    return Path(os.path.expanduser("~/.agents/skills"))

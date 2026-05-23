@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>智能体管理台</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0c0f14;
+        --panel: rgba(255,255,255,0.06);
+        --panel2: rgba(255,255,255,0.09);
+        --border: rgba(255,255,255,0.10);
+        --text: rgba(255,255,255,0.92);
+        --muted: rgba(255,255,255,0.65);
+        --brand: #7dd3fc;
+        --ok: rgba(60, 200, 120, 0.9);
+        --bad: rgba(255, 120, 110, 0.9);
+        --shadow: 0 18px 60px rgba(0,0,0,0.35);
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f6f8fb;
+          --panel: rgba(0,0,0,0.04);
+          --panel2: rgba(0,0,0,0.06);
+          --border: rgba(0,0,0,0.10);
+          --text: rgba(0,0,0,0.90);
+          --muted: rgba(0,0,0,0.60);
+          --shadow: 0 18px 60px rgba(0,0,0,0.10);
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        background: radial-gradient(1200px 800px at 20% 0%, rgba(125, 211, 252, 0.14), transparent 60%),
+                    radial-gradient(900px 700px at 90% 10%, rgba(167, 139, 250, 0.10), transparent 55%),
+                    var(--bg);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      a { color: inherit; text-decoration: none; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      .app { display: grid; grid-template-columns: 320px 1fr; flex: 1; min-height: 0; }
+      .sidebar {
+        padding: 18px;
+        border-right: 1px solid var(--border);
+        background: linear-gradient(180deg, rgba(255,255,255,0.05), transparent 45%);
+      }
+      .globalBar {
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(0,0,0,0.18);
+        backdrop-filter: blur(14px);
+      }
+      .globalBarInner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        max-width: 1400px;
+        margin: 0 auto;
+      }
+      .globalTitle { display: flex; align-items: baseline; gap: 8px; font-size: 14px; font-weight: 800; letter-spacing: 0.2px; }
+      .globalTitle span { color: var(--brand); }
+      .globalActions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+      .brand { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+      .brandTitle { font-size: 16px; font-weight: 700; letter-spacing: 0.2px; }
+      .brandTitle span { color: var(--brand); }
+      .brandSub { font-size: 12px; color: var(--muted); line-height: 1.35; }
+      .search {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        outline: none;
+      }
+      .profileList { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+      .profileItem {
+        padding: 10px 10px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        cursor: pointer;
+        display: grid;
+        gap: 6px;
+      }
+      .profileItem:hover { background: var(--panel2); }
+      .profileItem.active { outline: 2px solid rgba(125, 211, 252, 0.35); }
+      .profileRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .profileName { font-weight: 650; font-size: 13px; display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .typeBadge {
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        border: 1px solid var(--border);
+        color: var(--text);
+        opacity: 0.9;
+        white-space: nowrap;
+      }
+      .profilePath { font-size: 12px; color: var(--muted); word-break: break-all; }
+      .dotRow { display: flex; gap: 8px; align-items: center; }
+      .dot { width: 9px; height: 9px; border-radius: 999px; background: rgba(127,127,127,0.6); }
+      .dot.ok { background: var(--ok); }
+      .dot.bad { background: var(--bad); }
+      .moreBtn {
+        padding: 4px 8px;
+        border-radius: 10px;
+        line-height: 1;
+        font-weight: 800;
+        background: rgba(255,255,255,0.02);
+      }
+      .moreBtn:hover { background: rgba(255,255,255,0.06); }
+      .ctxMenu {
+        position: fixed;
+        z-index: 10001;
+        min-width: 170px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(0,0,0,0.35);
+        backdrop-filter: blur(14px);
+        box-shadow: var(--shadow);
+        padding: 6px;
+      }
+      .ctxMenu button {
+        width: 100%;
+        text-align: left;
+        border: 0;
+        background: transparent;
+        padding: 9px 10px;
+        border-radius: 10px;
+      }
+      .ctxMenu button:hover { background: rgba(255,255,255,0.08); }
+      .ctxMenu button.dangerItem { color: rgba(255, 120, 110, 0.95); }
+      .main {
+        padding: 18px 22px;
+        overflow: auto;
+      }
+      .topbar {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        border-radius: 16px;
+        box-shadow: var(--shadow);
+      }
+      .topLeft { display: grid; gap: 6px; min-width: 0; }
+      .topTitle { display: flex; align-items: center; gap: 10px; min-width: 0; }
+      .badge { padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+      .topTitle h1 { margin: 0; font-size: 18px; font-weight: 750; letter-spacing: 0.2px; }
+      .meta { display: flex; flex-wrap: wrap; gap: 10px; color: var(--muted); font-size: 12px; }
+      .meta code { color: var(--text); }
+      button {
+        padding: 9px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.04);
+        color: var(--text);
+        cursor: pointer;
+      }
+      button:hover { background: rgba(255,255,255,0.07); }
+      button.primary { border-color: rgba(125, 211, 252, 0.45); background: rgba(125, 211, 252, 0.10); }
+      button.danger { border-color: rgba(255, 120, 110, 0.45); background: rgba(255, 120, 110, 0.10); }
+      .cards { margin-top: 14px; display: grid; grid-template-columns: 1fr; gap: 12px; }
+      @media (min-width: 980px) { .cards { grid-template-columns: 1fr 1fr; } }
+      .card {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        border-radius: 16px;
+        padding: 14px 14px;
+        box-shadow: var(--shadow);
+      }
+      .cardHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .cardTitle { font-size: 14px; font-weight: 700; }
+      .pill { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+      .pill.ok { border-color: rgba(60, 200, 120, 0.55); color: rgba(60, 200, 120, 0.95); }
+      .pill.bad { border-color: rgba(255, 120, 110, 0.55); color: rgba(255, 120, 110, 0.95); }
+      .cardBody { margin-top: 10px; display: grid; gap: 10px; }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      .row input, .row textarea, .row select {
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.04);
+        color: var(--text);
+        padding: 9px 10px;
+        outline: none;
+      }
+      .row input { min-width: 180px; }
+      textarea {
+        width: 100%;
+        min-height: 260px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 10px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-weight: 650; font-size: 12px; }
+      .tabs { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+      .tabBtn { padding: 8px 12px; border-radius: 999px; background: var(--panel); border: 1px solid var(--border); color: var(--muted); }
+      .tabBtn.active { color: var(--text); border-color: rgba(125, 211, 252, 0.45); background: rgba(125, 211, 252, 0.10); }
+      .panel { display: none; margin-top: 12px; }
+      .panel.active { display: block; }
+      .hint { font-size: 12px; color: var(--muted); }
+      #toast {
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(0,0,0,0.12);
+        color: var(--muted);
+        white-space: pre-wrap;
+        min-height: 44px;
+      }
+    </style>
+  </head>
+  <body data-page="app" data-runtime="{{ initial_runtime | default('hermes') }}" data-profile="{{ initial_profile | default('default') }}">
+    <header class="globalBar">
+      <div class="globalBarInner">
+        <div class="globalTitle"><span>智能体</span> 管理台</div>
+        <div class="globalActions">
+          <button id="globalRefresh" class="primary">刷新</button>
+          <button id="globalTemplates">模板管理</button>
+          <button id="globalRegistry">全局配置</button>
+          <button id="globalLogs">日志管理</button>
+        </div>
+      </div>
+    </header>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brandTitle"><span>智能体</span> 管理台</div>
+          <div class="brandSub">instances · services · env · skills · channels</div>
+        </div>
+        <div class="row" style="margin: 10px 0 8px;">
+          <button id="createProfile" class="primary" style="width: 100%;">新增实例</button>
+        </div>
+        <input id="profileSearch" class="search" placeholder="搜索实例..." />
+        <div id="profileList" class="profileList"></div>
+      </aside>
+      <main class="main">
+        <section class="topbar">
+          <div class="topLeft">
+            <div class="topTitle">
+              <h1 id="activeProfileTitle">Profile</h1>
+              <span id="activeProfileBadge" class="badge"></span>
+            </div>
+            <div class="meta">
+              <div>path: <code id="activeProfilePath"></code></div>
+              <div id="hermesRootMeta"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="cards" id="cardsServices">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">Dashboard</div>
+              <span id="dashPill" class="pill">未知</span>
+            </div>
+            <div class="cardBody">
+              <div class="row">
+                <button id="dashStart" class="primary">启动</button>
+                <button id="dashStop" class="danger">停止</button>
+                <a id="dashLink" class="hint" target="_blank" rel="noreferrer"></a>
+              </div>
+              <div class="hint" id="dashHint"></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">Gateway</div>
+              <span id="gwPill" class="pill">未知</span>
+            </div>
+            <div class="cardBody">
+              <div class="row">
+                <button id="gwStart" class="primary">启动</button>
+                <button id="gwStop" class="danger">停止</button>
+              </div>
+              <div class="hint" id="gwHint"></div>
+            </div>
+          </div>
+        </section>
+
+        <nav class="tabs">
+          <button class="tabBtn active" data-tab="env">Env</button>
+          <button class="tabBtn" data-tab="config">Config</button>
+          <button class="tabBtn" data-tab="soul">Soul</button>
+          <button class="tabBtn" data-tab="memories">Memories</button>
+          <button class="tabBtn" data-tab="skills">Skills</button>
+          <button class="tabBtn" data-tab="mcp">MCP</button>
+          <button class="tabBtn" data-tab="channels">Channels</button>
+          <button class="tabBtn" data-tab="cron">Cron</button>
+          <button class="tabBtn" data-tab="logs">Logs</button>
+          <button class="tabBtn" data-tab="sessions">Sessions</button>
+        </nav>
+
+        <section id="panel-env" class="panel active">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">.env</div>
+              <span id="envPath" class="hint"></span>
+            </div>
+            <div class="cardBody">
+              <div class="row">
+                <input id="envNewKey" placeholder="新增 KEY" />
+                <input id="envNewValue" placeholder="VALUE" />
+                <button id="envSet" class="primary">新增</button>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:30%">Key</th>
+                    <th>值</th>
+                    <th style="width:60px"></th>
+                  </tr>
+                </thead>
+                <tbody id="envBody"></tbody>
+              </table>
+              <div class="row" style="margin-top:10px">
+                <button id="envSaveBatch" class="primary">确认保存</button>
+                <span class="hint">修改后点击确认保存才会生效</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-config" class="panel">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">config.yaml (raw)</div>
+              <span id="cfgPath" class="hint"></span>
+            </div>
+            <div class="cardBody">
+              <div class="row">
+                <button id="cfgSave" class="primary">保存</button>
+              </div>
+              <textarea id="cfgRaw" spellcheck="false"></textarea>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-soul" class="panel">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">SOUL.md (raw)</div>
+              <span id="soulPath" class="hint"></span>
+            </div>
+            <div class="cardBody">
+              <div class="row">
+                <button id="soulSave" class="primary">保存</button>
+              </div>
+              <textarea id="soulRaw" spellcheck="false"></textarea>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-memories" class="panel">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">memories/USER.md (raw)</div>
+              <span id="userMemPath" class="hint"></span>
+            </div>
+            <div class="cardBody">
+              <div class="row">
+                <button id="userMemSave" class="primary">保存</button>
+              </div>
+              <textarea id="userMemRaw" spellcheck="false"></textarea>
+              <div class="hint">条目分隔符为：空行 + § + 空行（即 \n§\n）</div>
+            </div>
+          </div>
+          <div class="card" style="margin-top:12px">
+            <div class="cardHead">
+              <div class="cardTitle">memories/MEMORY.md (raw)</div>
+              <span id="memoryMemPath" class="hint"></span>
+            </div>
+            <div class="cardBody">
+              <div class="row">
+                <button id="memoryMemSave" class="primary">保存</button>
+              </div>
+              <textarea id="memoryMemRaw" spellcheck="false"></textarea>
+              <div class="hint">条目分隔符为：空行 + § + 空行（即 \n§\n）</div>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-skills" class="panel">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">Skills</div>
+              <span class="hint">按路径分组，修改后点确认保存生效</span>
+            </div>
+            <div class="cardBody">
+              <div class="row">
+                <input id="skillSearch" placeholder="过滤 skills..." />
+              </div>
+              <div id="skillsBody"></div>
+              <div class="row" style="margin-top:10px">
+                <button id="skillsSaveBatch" class="primary">确认保存</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-mcp" class="panel">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">MCP（NanoGhost）</div>
+              <span class="hint">全局安装全集；实例通过 mcp.enabled_only 白名单控制可见 MCP</span>
+            </div>
+            <div class="cardBody">
+              <div class="row" style="flex-wrap:wrap">
+                <button id="ngMcpEditGlobal">编辑全局 Registry</button>
+                <input id="ngMcpAllowlist" placeholder="enabled_only: server1,server2" style="min-width:320px" />
+                <button id="ngMcpAllowlistLoad">读取白名单</button>
+                <button id="ngMcpAllowlistSave" class="primary">保存白名单</button>
+                <button id="ngMcpProbe">探测</button>
+              </div>
+              <table style="margin-top:10px">
+                <thead>
+                  <tr>
+                    <th style="width:16%">ID</th>
+                    <th>URL</th>
+                    <th style="width:70px">OK</th>
+                    <th style="width:140px">Status</th>
+                    <th style="width:110px">Dur(ms)</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody id="ngMcpProbeBody"></tbody>
+              </table>
+              <div class="row" style="margin-top:10px; flex-wrap:wrap">
+                <input id="ngMcpToolsServerId" placeholder="server_id" style="min-width:220px" />
+                <button id="ngMcpToolsFetch">tools/list</button>
+              </div>
+              <textarea id="ngMcpToolsOut" spellcheck="false" style="min-height:220px; margin-top:8px"></textarea>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-channels" class="panel">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">渠道/频道</div>
+              <span id="chPath" class="hint"></span>
+            </div>
+            <div class="cardBody">
+              <div id="channelsBody"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-cron" class="panel">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">Cron 任务</div>
+              <span id="cronDir" class="hint"></span>
+            </div>
+            <div class="cardBody" id="cronBody"></div>
+          </div>
+        </section>
+
+        <section id="panel-logs" class="panel">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">日志</div>
+              <span id="logsDir" class="hint"></span>
+            </div>
+            <div class="cardBody" id="logsBody"></div>
+          </div>
+        </section>
+
+        <section id="panel-sessions" class="panel">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">Sessions</div>
+              <span id="sessionsDir" class="hint"></span>
+            </div>
+            <div class="cardBody" id="sessionsBody"></div>
+          </div>
+        </section>
+
+        <section class="card" style="margin-top:14px">
+          <div class="cardHead">
+            <div class="cardTitle">MD 文件说明（建议管理）</div>
+            <span class="hint">用于约束行为与沉淀偏好</span>
+          </div>
+          <div class="cardBody">
+            <div class="hint">
+              <div><code>SOUL.md</code>（profile 级）：身份/总规则/长期偏好。格式：纯 Markdown（无需分隔符）。</div>
+              <div style="margin-top:6px"><code>.hermes.md</code> 或 <code>HERMES.md</code>（项目级）：项目规则/约束/输出格式等。查找方式：从工作目录向上查找，命中第一个即注入。格式：纯 Markdown；可带 YAML frontmatter，但注入时只使用正文。</div>
+              <div style="margin-top:6px"><code>memories/USER.md</code>（profile 级）：关于用户的偏好与沟通习惯。格式：多条目文本，用 <code>\n§\n</code> 分隔。</div>
+              <div style="margin-top:6px"><code>memories/MEMORY.md</code>（profile 级）：长期事实/工具习惯/环境约定。格式：多条目文本，用 <code>\n§\n</code> 分隔。</div>
+            </div>
+            <pre style="margin:0; padding:10px; background:var(--panel); border-radius:12px; overflow:auto; font-size:12px">USER.md / MEMORY.md 示例：
+
+用户偏好：回答尽量简洁；命令可复制；默认中文
+
+§
+
+环境：Hermes profiles 位于 E:\Hermes\...\ .hermes\profiles
+</pre>
+          </div>
+        </section>
+
+        <div id="toast"></div>
+      </main>
+    </div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

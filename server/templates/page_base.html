@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}页面{% endblock %}</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0c0f14;
+        --panel: rgba(255,255,255,0.06);
+        --border: rgba(255,255,255,0.10);
+        --text: rgba(255,255,255,0.92);
+        --muted: rgba(255,255,255,0.65);
+        --brand: #7dd3fc;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f6f8fb;
+          --panel: rgba(0,0,0,0.04);
+          --border: rgba(0,0,0,0.10);
+          --text: rgba(0,0,0,0.90);
+          --muted: rgba(0,0,0,0.60);
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      a { color: inherit; text-decoration: none; }
+      .wrap { max-width: 1100px; margin: 0 auto; padding: 16px 18px; }
+      header {
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+      }
+      .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .home { font-weight: 800; letter-spacing: 0.2px; }
+      .home span { color: var(--brand); }
+      main { min-height: calc(100vh - 60px); }
+      h1 { margin: 0 0 12px; font-size: 18px; font-weight: 800; }
+      .hint { color: var(--muted); font-size: 12px; }
+      .card {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        border-radius: 16px;
+        padding: 14px 14px;
+      }
+      .cardHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .cardTitle { font-size: 14px; font-weight: 700; }
+      .cardBody { margin-top: 10px; display: grid; gap: 10px; }
+      button {
+        padding: 9px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.04);
+        color: var(--text);
+        cursor: pointer;
+      }
+      button:hover { background: rgba(255,255,255,0.07); }
+      button.primary { border-color: rgba(125, 211, 252, 0.45); background: rgba(125, 211, 252, 0.10); }
+      button.danger { border-color: rgba(255, 120, 110, 0.45); background: rgba(255, 120, 110, 0.10); }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      .row input, .row textarea, .row select {
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.04);
+        color: var(--text);
+        padding: 9px 10px;
+        outline: none;
+      }
+      textarea { width: 100%; min-height: 360px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 10px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-weight: 650; font-size: 12px; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      #toast {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(0,0,0,0.12);
+        color: var(--muted);
+        white-space: pre-wrap;
+        min-height: 44px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="wrap top">
+        <a class="home" href="/"><span>智能体</span> 管理台</a>
+        <div class="hint">{% block header_hint %}{% endblock %}</div>
+      </div>
+    </header>
+    <main class="wrap">
+      {% block content %}{% endblock %}
+    </main>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "updated_at": "2026-05-22T01:21:55+0800",
+  "channels": {
+    "feishu": {
+      "enabled": true
+    },
+    "cli": {
+      "enabled": false
+    }
+  }
+}

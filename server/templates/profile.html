@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Profile</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif; margin: 24px; }
+      a { color: inherit; }
+      h1 { margin: 0 0 8px; }
+      h2 { margin: 18px 0 8px; }
+      .muted { opacity: 0.75; }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      button { padding: 6px 10px; cursor: pointer; }
+      input, textarea { padding: 6px 8px; }
+      textarea { width: 100%; min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+      th, td { border: 1px solid rgba(127,127,127,0.35); padding: 8px; text-align: left; vertical-align: top; }
+      th { white-space: nowrap; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      .pill { display: inline-block; padding: 2px 8px; border: 1px solid rgba(127,127,127,0.35); border-radius: 999px; }
+      .ok { border-color: rgba(0,160,80,0.55); }
+      .bad { border-color: rgba(200,80,60,0.65); }
+      .grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+      @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
+      #toast { margin-top: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body data-page="profile" data-profile="{{ profile_name }}">
+    <div class="row">
+      <a href="/">← 返回首页</a>
+      <span class="muted">Profile:</span>
+      <code id="profileName">{{ profile_name }}</code>
+      <button id="refresh">刷新</button>
+    </div>
+
+    <div class="grid">
+      <section>
+        <h2>Dashboard</h2>
+        <div class="row">
+          <span id="dashStatus" class="pill">未知</span>
+          <button id="dashStart">启动</button>
+          <button id="dashStop">停止</button>
+          <a id="dashLink" class="muted" target="_blank" rel="noreferrer"></a>
+        </div>
+      </section>
+      <section>
+        <h2>Gateway</h2>
+        <div class="row">
+          <span id="gwStatus" class="pill">未知</span>
+          <button id="gwStart">启动</button>
+          <button id="gwStop">停止</button>
+          <span id="gwInfo" class="muted"></span>
+        </div>
+      </section>
+    </div>
+
+    <section>
+      <h2>Env</h2>
+      <div class="row">
+        <input id="envKey" placeholder="KEY" />
+        <input id="envValue" placeholder="VALUE" />
+        <button id="envSet">写入</button>
+        <button id="envDelete">删除 Key</button>
+        <span id="envPath" class="muted"></span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>已设置</th>
+            <th>值(脱敏)</th>
+          </tr>
+        </thead>
+        <tbody id="envBody"></tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Config (raw)</h2>
+      <div class="row">
+        <button id="cfgSave">保存</button>
+        <span id="cfgPath" class="muted"></span>
+      </div>
+      <textarea id="cfgRaw" spellcheck="false"></textarea>
+    </section>
+
+    <section>
+      <h2>Skills</h2>
+      <div class="row muted" id="skillsHint"></div>
+      <table>
+        <thead>
+          <tr>
+            <th>Skill</th>
+            <th>启用</th>
+            <th>路径</th>
+          </tr>
+        </thead>
+        <tbody id="skillsBody"></tbody>
+      </table>
+    </section>
+
+    <div id="toast" class="muted"></div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
