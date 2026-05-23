@@ -57,6 +57,15 @@ def spawn(argv: Sequence[str]) -> SpawnResult:
     return SpawnResult(pid=int(p.pid), argv=list(argv))
 
 
+def spawn_capture(
+    argv: Sequence[str],
+    *,
+    grace_period: float = 1.5,
+) -> tuple[SpawnResult, str | None]:
+    """Spawn without custom env, capturing stderr."""
+    return spawn_with_capture(argv, cwd=None, env=None, grace_period=grace_period)
+
+
 def spawn_with(
     argv: Sequence[str],
     *,
@@ -71,3 +80,35 @@ def spawn_with(
         stderr=subprocess.DEVNULL,
     )
     return SpawnResult(pid=int(p.pid), argv=list(argv))
+
+
+def spawn_with_capture(
+    argv: Sequence[str],
+    *,
+    cwd: str | None = None,
+    env: Mapping[str, str] | None = None,
+    grace_period: float = 1.5,
+) -> tuple[SpawnResult, str | None]:
+    """Spawn a process with stderr captured.
+
+    If the process exits within *grace_period* seconds, returns
+    ``(result, stderr_text)`` so the caller can inspect startup errors.
+
+    If the process is still running after the grace period, returns
+    ``(result, None)`` — the process appears to have started OK.
+    """
+    p = subprocess.Popen(
+        list(argv),
+        cwd=cwd,
+        env=dict(env) if env is not None else None,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    sr = SpawnResult(pid=int(p.pid), argv=list(argv))
+    try:
+        _, err = p.communicate(timeout=grace_period)
+    except subprocess.TimeoutExpired:
+        p.stderr.close()
+        return sr, None
+    text = (err or b"").decode("utf-8", errors="replace").strip()
+    return sr, text or None

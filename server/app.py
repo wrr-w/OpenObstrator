@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -33,7 +34,7 @@ from server.logbuffer import get_log_lines, install_log_buffer
 from server.ports import allocate_port, is_port_open
 from server.profiles import list_profiles
 from server.profile_create import create_profile_clone_default
-from server.processes import is_pid_running, kill_pid_tree, spawn, spawn_with
+from server.processes import is_pid_running, kill_pid_tree, spawn, spawn_capture, spawn_with, spawn_with_capture
 from server.registry import load_registry, save_registry
 from server.soulfile import read_raw_text, write_raw_text
 from server.skills import list_global_skills_runtime
@@ -60,6 +61,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 install_log_buffer()
 
+logger = logging.getLogger(__name__)
 
 class EnvPutBody(BaseModel):
     key: str
@@ -494,6 +496,7 @@ def dashboard_start(name: str):
     dash = _proc_record(reg, "hermes", name, "dashboard")
 
     if dash.get("pid") and is_pid_running(int(dash["pid"])):
+        logger.info("hermes dashboard %s already running (pid %s)", name, dash["pid"])
         return {"ok": True, **_status_for_record(dash)}
 
     used = _collect_used_ports(reg)
@@ -521,7 +524,15 @@ def dashboard_start(name: str):
         "--no-open",
         "--skip-build",
     ]
-    sr = spawn(argv)
+    logger.info("starting hermes dashboard %s port=%s", name, dash["port"])
+    sr, err = spawn_capture(argv)
+    if err is not None:
+        logger.error("hermes dashboard %s failed to start: %s", name, err)
+        raise HTTPException(
+            status_code=500,
+            detail=f"process exited during startup:\n{err}",
+        )
+    logger.info("hermes dashboard %s started pid=%s", name, sr.pid)
     dash["pid"] = sr.pid
     dash["started_at"] = int(time.time())
     save_registry(REGISTRY_PATH, reg)
@@ -565,6 +576,7 @@ def gateway_start(name: str):
     gw = _proc_record(reg, "hermes", name, "gateway")
 
     if gw.get("pid") and is_pid_running(int(gw["pid"])):
+        logger.info("hermes gateway %s already running (pid %s)", name, gw["pid"])
         return {"ok": True, **_status_for_record(gw)}
 
     used = _collect_used_ports(reg)
@@ -588,7 +600,15 @@ def gateway_start(name: str):
         "run",
         "--quiet",
     ]
-    sr = spawn(argv)
+    logger.info("starting hermes gateway %s", name)
+    sr, err = spawn_capture(argv)
+    if err is not None:
+        logger.error("hermes gateway %s failed to start: %s", name, err)
+        raise HTTPException(
+            status_code=500,
+            detail=f"process exited during startup:\n{err}",
+        )
+    logger.info("hermes gateway %s started pid=%s", name, sr.pid)
     gw["pid"] = sr.pid
     gw["started_at"] = int(time.time())
     save_registry(REGISTRY_PATH, reg)
@@ -1288,6 +1308,7 @@ def instance_service_start(runtime: str, name: str, service: str):
         reg = load_registry(REGISTRY_PATH)
         rec = _proc_record(reg, "nanoghost", name, "gateway")
         if rec.get("pid") and is_pid_running(int(rec["pid"])):
+            logger.info("nanoghost gateway %s/%s already running (pid %s)", name, "gateway", rec["pid"])
             return {"ok": True, **_status_for_record(rec)}
         used = _collect_used_ports(reg)
         if not rec.get("port"):
@@ -1320,7 +1341,15 @@ def instance_service_start(runtime: str, name: str, service: str):
             "--port",
             str(int(rec["port"])),
         ]
-        sr = spawn_with(argv, cwd=str(run_py.parent), env=env)
+        logger.info("starting nanoghost gateway %s/%s port=%s", name, "gateway", rec["port"])
+        sr, err = spawn_with_capture(argv, cwd=str(run_py.parent), env=env)
+        if err is not None:
+            logger.error("nanoghost gateway %s/%s failed to start: %s", name, "gateway", err)
+            raise HTTPException(
+                status_code=500,
+                detail=f"process exited during startup:\n{err}",
+            )
+        logger.info("nanoghost gateway %s/%s started pid=%s", name, "gateway", sr.pid)
         rec["pid"] = sr.pid
         rec["started_at"] = int(time.time())
         save_registry(REGISTRY_PATH, reg)
@@ -1934,6 +1963,7 @@ def runtime_process_start(runtime: str, name: str, proc: str):
         reg = load_registry(REGISTRY_PATH)
         rec = _proc_record(reg, "nanoghost", name, proc)
         if rec.get("pid") and is_pid_running(int(rec["pid"])):
+            logger.info("nanoghost %s/%s already running (pid %s)", name, proc, rec["pid"])
             return {"ok": True, **_status_for_record(rec)}
         env = dict(os.environ)
         env["INSTANCE_DIR"] = str(inst)
@@ -1951,7 +1981,15 @@ def runtime_process_start(runtime: str, name: str, proc: str):
         else:
             env.pop("AGENT_MODE", None)
         argv = [sys.executable, str(run_py), "-I", str(inst)]
-        sr = spawn_with(argv, cwd=str(run_py.parent), env=env)
+        logger.info("starting nanoghost %s/%s", name, proc)
+        sr, err = spawn_with_capture(argv, cwd=str(run_py.parent), env=env)
+        if err is not None:
+            logger.error("nanoghost %s/%s failed to start: %s", name, proc, err)
+            raise HTTPException(
+                status_code=500,
+                detail=f"process exited during startup:\n{err}",
+            )
+        logger.info("nanoghost %s/%s started pid=%s", name, proc, sr.pid)
         rec["pid"] = sr.pid
         rec["started_at"] = int(time.time())
         save_registry(REGISTRY_PATH, reg)
