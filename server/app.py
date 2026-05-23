@@ -463,6 +463,30 @@ def _collect_used_ports(reg: dict) -> set[int]:
     return used
 
 
+def _wait_healthy(*, pid: int, port: int | None = None, timeout: float = 6.0) -> str | None:
+    """Poll PID (and optionally port) until process is confirmed healthy.
+
+    Returns ``None`` if healthy within *timeout*, or an error string otherwise.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        alive = is_pid_running(pid)
+        if port is not None:
+            listening = is_port_open(SERVICE_HOST, port)
+        else:
+            listening = True
+        if alive and listening:
+            return None
+        if not alive:
+            return "process exited before becoming healthy"
+        time.sleep(0.4)
+    if port is not None and not is_port_open(SERVICE_HOST, port):
+        return f"port {port} did not open within {timeout}s"
+    if not is_pid_running(pid):
+        return "process exited before becoming healthy"
+    return None
+
+
 def _status_for_record(rec: dict) -> dict:
     port = rec.get("port")
     pid = rec.get("pid")
@@ -532,6 +556,12 @@ def dashboard_start(name: str):
             status_code=500,
             detail=f"process exited during startup:\n{err}",
         )
+    logger.info("hermes dashboard %s started pid=%s, waiting for health", name, sr.pid)
+    health_err = _wait_healthy(pid=sr.pid, port=int(dash["port"]))
+    if health_err:
+        logger.error("hermes dashboard %s unhealthy: %s", name, health_err)
+        kill_pid_tree(sr.pid)
+        raise HTTPException(status_code=500, detail=health_err)
     logger.info("hermes dashboard %s started pid=%s", name, sr.pid)
     dash["pid"] = sr.pid
     dash["started_at"] = int(time.time())
@@ -600,7 +630,7 @@ def gateway_start(name: str):
         "run",
         "--quiet",
     ]
-    logger.info("starting hermes gateway %s", name)
+    logger.info("starting hermes gateway %s port=%s", name, gw["port"])
     sr, err = spawn_capture(argv)
     if err is not None:
         logger.error("hermes gateway %s failed to start: %s", name, err)
@@ -608,6 +638,12 @@ def gateway_start(name: str):
             status_code=500,
             detail=f"process exited during startup:\n{err}",
         )
+    logger.info("hermes gateway %s started pid=%s, waiting for health", name, sr.pid)
+    health_err = _wait_healthy(pid=sr.pid, port=int(gw["port"]))
+    if health_err:
+        logger.error("hermes gateway %s unhealthy: %s", name, health_err)
+        kill_pid_tree(sr.pid)
+        raise HTTPException(status_code=500, detail=health_err)
     logger.info("hermes gateway %s started pid=%s", name, sr.pid)
     gw["pid"] = sr.pid
     gw["started_at"] = int(time.time())
@@ -1349,6 +1385,12 @@ def instance_service_start(runtime: str, name: str, service: str):
                 status_code=500,
                 detail=f"process exited during startup:\n{err}",
             )
+        logger.info("nanoghost gateway %s/%s started pid=%s, waiting for health", name, "gateway", sr.pid)
+        health_err = _wait_healthy(pid=sr.pid, port=int(rec["port"]))
+        if health_err:
+            logger.error("nanoghost gateway %s/%s unhealthy: %s", name, "gateway", health_err)
+            kill_pid_tree(sr.pid)
+            raise HTTPException(status_code=500, detail=health_err)
         logger.info("nanoghost gateway %s/%s started pid=%s", name, "gateway", sr.pid)
         rec["pid"] = sr.pid
         rec["started_at"] = int(time.time())
@@ -1989,6 +2031,12 @@ def runtime_process_start(runtime: str, name: str, proc: str):
                 status_code=500,
                 detail=f"process exited during startup:\n{err}",
             )
+        logger.info("nanoghost %s/%s started pid=%s, waiting for health", name, proc, sr.pid)
+        health_err = _wait_healthy(pid=sr.pid)
+        if health_err:
+            logger.error("nanoghost %s/%s unhealthy: %s", name, proc, health_err)
+            kill_pid_tree(sr.pid)
+            raise HTTPException(status_code=500, detail=health_err)
         logger.info("nanoghost %s/%s started pid=%s", name, proc, sr.pid)
         rec["pid"] = sr.pid
         rec["started_at"] = int(time.time())
