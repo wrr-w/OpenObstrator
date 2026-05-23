@@ -5,3 +5,13 @@ __pycache__/
 *.log
 .claude/settings.local.json
 .venv/
+
+# config / runtime state
+data/config.yaml
+data/registry.json
+
+# instance specific data
+data/nanoghost/instances/*/
+
+# environment secrets
+*.env

@@ -4,6 +4,7 @@ import csv
 import logging
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from io import StringIO
 from typing import Mapping, Sequence
@@ -81,12 +82,13 @@ def spawn_logged(
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
     tag: str = "",
+    capture_seconds: float = 3.0,
 ) -> SpawnResult:
-    """Spawn a process and log its stderr in a background daemon thread.
+    """Spawn a process, capture startup stderr, and log it.
 
-    Returns immediately (non-blocking).  Any stderr output from the
-    spawned process appears in the application log buffer so you can
-    see startup errors or runtime diagnostics.
+    A background thread reads stderr for up to *capture_seconds*.
+    Any output collected is written to the application log buffer.
+    Returns immediately (the thread is a daemon).
     """
     logger = logging.getLogger(f"spawn.{tag}" if tag else "spawn")
     p = subprocess.Popen(
@@ -98,13 +100,29 @@ def spawn_logged(
     )
     sr = SpawnResult(pid=int(p.pid), argv=list(argv))
 
+    buf: list[str] = []
+    stop = False
+
     def _reader():
-        with p.stderr:
-            for line in iter(p.stderr.readline, b""):
-                text = line.decode("utf-8", errors="replace").rstrip("\r\n")
-                if text:
-                    logger.warning("[%s] %s", tag or "stderr", text)
+        while not stop:
+            try:
+                line = p.stderr.readline()
+            except Exception:
+                break
+            if not line:
+                break
+            buf.append(line.decode("utf-8", errors="replace").rstrip("\r\n"))
 
     t = threading.Thread(target=_reader, daemon=True)
     t.start()
+    time.sleep(capture_seconds)
+    stop = True
+    try:
+        p.stderr.close()
+    except Exception:
+        pass
+
+    for text in buf:
+        if text:
+            logger.warning("[%s] %s", tag or "stderr", text)
     return sr

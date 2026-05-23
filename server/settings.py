@@ -9,8 +9,6 @@ import yaml
 
 @dataclass(frozen=True)
 class PortAlloc:
-    dashboard_start: int = 18000
-    dashboard_end: int = 18999
     gateway_start: int = 19000
     gateway_end: int = 19999
 
@@ -33,8 +31,6 @@ def load_app_config(config_path: Path) -> AppConfig:
 
     pa_raw = raw.get("port_alloc", {}) if isinstance(raw.get("port_alloc"), dict) else {}
     port_alloc = PortAlloc(
-        dashboard_start=int(pa_raw.get("dashboard_start", 18000)),
-        dashboard_end=int(pa_raw.get("dashboard_end", 18999)),
         gateway_start=int(pa_raw.get("gateway_start", 19000)),
         gateway_end=int(pa_raw.get("gateway_end", 19999)),
     )
