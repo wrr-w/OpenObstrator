@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -34,7 +35,7 @@ from server.logbuffer import get_log_lines, install_log_buffer
 from server.ports import allocate_port, is_port_open
 from server.profiles import list_profiles
 from server.profile_create import create_profile_clone_default
-from server.processes import is_pid_running, kill_pid_tree, spawn, spawn_healthy, spawn_with
+from server.processes import is_pid_running, kill_pid_tree, spawn, spawn_logged, spawn_with
 from server.registry import load_registry, save_registry
 from server.soulfile import read_raw_text, write_raw_text
 from server.skills import list_global_skills_runtime
@@ -479,95 +480,12 @@ def _status_for_record(rec: dict) -> dict:
 
 
 def _hermes_bin_dir() -> str | None:
-    """Locate the hermes executable directory (venv Scripts or parallel bin)."""
-    candidates = [
-        "E:\\Hermes\\hermes-agent-main\\.venv\\Scripts",
-    ]
-    for d in candidates:
-        if Path(d).joinpath("hermes.exe").exists():
-            return d
+    """Locate the directory containing ``hermes.exe`` / ``hermes``."""
+    from shutil import which
+    exe = which("hermes")
+    if exe:
+        return str(Path(exe).resolve().parent)
     return None
-
-
-@app.post("/api/profiles/{name}/dashboard/start")
-def dashboard_start(name: str):
-    cfg = load_app_config(CONFIG_PATH)
-    reg = load_registry(REGISTRY_PATH)
-    dash = _proc_record(reg, "hermes", name, "dashboard")
-
-    if dash.get("pid") and is_pid_running(int(dash["pid"])):
-        logger.info("hermes dashboard %s already running (pid %s)", name, dash["pid"])
-        return {"ok": True, **_status_for_record(dash)}
-
-    used = _collect_used_ports(reg)
-    if not dash.get("port"):
-        dash["port"] = allocate_port(
-            SERVICE_HOST,
-            cfg.port_alloc.dashboard_start,
-            cfg.port_alloc.dashboard_end,
-            used=used,
-        )
-
-    hermes_bin = _hermes_bin_dir()
-    if hermes_bin:
-        os.environ["PATH"] = hermes_bin + os.pathsep + os.environ.get("PATH", "")
-
-    argv = [
-        "hermes",
-        "-p",
-        name,
-        "dashboard",
-        "--host",
-        SERVICE_HOST,
-        "--port",
-        str(int(dash["port"])),
-        "--no-open",
-        "--skip-build",
-    ]
-    logger.info("starting hermes dashboard %s port=%s", name, dash["port"])
-    sr, err = spawn_healthy(argv, port=int(dash["port"]), host=SERVICE_HOST)
-    if err is not None:
-        logger.error("hermes dashboard %s failed to start: %s", name, err)
-        kill_pid_tree(sr.pid)
-        raise HTTPException(
-            status_code=500,
-            detail=err,
-        )
-    logger.info("hermes dashboard %s started pid=%s", name, sr.pid)
-    dash["pid"] = sr.pid
-    dash["started_at"] = int(time.time())
-    save_registry(REGISTRY_PATH, reg)
-    return {"ok": True, **_status_for_record(dash), "argv": argv}
-
-
-@app.post("/api/profiles/{name}/dashboard/stop")
-def dashboard_stop(name: str):
-    reg = load_registry(REGISTRY_PATH)
-    dash = _proc_record(reg, "hermes", name, "dashboard")
-    pid = dash.get("pid")
-    if not pid:
-        return {"ok": False, "error": "no pid recorded"}
-
-    kill_pid_tree(int(pid))
-    dash["pid"] = None
-    dash["started_at"] = None
-    save_registry(REGISTRY_PATH, reg)
-    return {"ok": True}
-
-
-@app.get("/api/profiles/{name}/dashboard/status")
-def dashboard_status(name: str):
-    reg = load_registry(REGISTRY_PATH)
-    dash = _proc_record(reg, "hermes", name, "dashboard")
-    status = _status_for_record(dash)
-
-    if status["pid"] and not status["pid_running"]:
-        dash["pid"] = None
-        dash["started_at"] = None
-        save_registry(REGISTRY_PATH, reg)
-        status = _status_for_record(dash)
-
-    return {"ok": True, **status}
 
 
 @app.post("/api/profiles/{name}/gateway/start")
@@ -593,24 +511,29 @@ def gateway_start(name: str):
     if hermes_bin:
         os.environ["PATH"] = hermes_bin + os.pathsep + os.environ.get("PATH", "")
 
+    # Check if already running via hermes CLI
+    r = subprocess.run(["hermes", "-p", name, "gateway", "status"], capture_output=True, text=True, errors="replace")
+    if "Gateway is running" in (r.stdout or ""):
+        logger.info("hermes gateway %s already running (cli status)", name)
+        for token in (r.stdout or "").split():
+            m = re.search(r"(\d+)", token)
+            if m:
+                gw["pid"] = int(m.group(1))
+                gw["started_at"] = gw.get("started_at") or int(time.time())
+                save_registry(REGISTRY_PATH, reg)
+                return {"ok": True, "running": True, "pid": gw["pid"]}
+        return {"ok": True, "running": True}
+
     argv = [
         "hermes",
         "-p",
         name,
         "gateway",
         "run",
-        "--quiet",
     ]
-    logger.info("starting hermes gateway %s port=%s", name, gw["port"])
-    sr, err = spawn_healthy(argv, port=int(gw["port"]), host=SERVICE_HOST)
-    if err is not None:
-        logger.error("hermes gateway %s failed to start: %s", name, err)
-        kill_pid_tree(sr.pid)
-        raise HTTPException(
-            status_code=500,
-            detail=err,
-        )
-    logger.info("hermes gateway %s started pid=%s", name, sr.pid)
+    logger.info("starting hermes gateway %s port=%s argv=%s", name, gw["port"], " ".join(argv))
+    sr = spawn_logged(argv, tag=f"hermes-gateway-{name}")
+    logger.info("hermes gateway %s pid=%s", name, sr.pid)
     gw["pid"] = sr.pid
     gw["started_at"] = int(time.time())
     save_registry(REGISTRY_PATH, reg)
@@ -619,13 +542,13 @@ def gateway_start(name: str):
 
 @app.post("/api/profiles/{name}/gateway/stop")
 def gateway_stop(name: str):
+    argv = ["hermes", "-p", name, "gateway", "stop"]
+    logger.info("stopping hermes gateway %s argv=%s", name, " ".join(argv))
+    r = subprocess.run(argv, capture_output=True, text=True, errors="replace")
+    out = (r.stdout or "").strip() + (r.stderr or "").strip()
+    logger.info("hermes gateway %s stop result: %s", name, out or "ok")
     reg = load_registry(REGISTRY_PATH)
     gw = _proc_record(reg, "hermes", name, "gateway")
-    pid = gw.get("pid")
-    if not pid:
-        return {"ok": False, "error": "no pid recorded"}
-
-    kill_pid_tree(int(pid))
     gw["pid"] = None
     gw["started_at"] = None
     save_registry(REGISTRY_PATH, reg)
@@ -634,17 +557,36 @@ def gateway_stop(name: str):
 
 @app.get("/api/profiles/{name}/gateway/status")
 def gateway_status(name: str):
+    r = subprocess.run(
+        ["hermes", "-p", name, "gateway", "status"],
+        capture_output=True, text=True, errors="replace",
+    )
+    cli_out = (r.stdout or "").strip() + (r.stderr or "").strip()
     reg = load_registry(REGISTRY_PATH)
     gw = _proc_record(reg, "hermes", name, "gateway")
-    status = _status_for_record(gw)
 
-    if status["pid"] and not status["pid_running"]:
+    if "Gateway is running" in cli_out:
+        for token in cli_out.split():
+            m = re.search(r"(\d+)", token)
+            if m:
+                gw["pid"] = int(m.group(1))
+                gw["started_at"] = gw.get("started_at") or int(time.time())
+                save_registry(REGISTRY_PATH, reg)
+                return {"ok": True, "running": True, "pid": gw["pid"]}
+        save_registry(REGISTRY_PATH, reg)
+        return {"ok": True, "running": True, "pid": gw.get("pid")}
+    else:
+        # CLI 未检测到运行中（可能因为前台 run 模式），回退到 PID/端口检测
+        pid_running = bool(gw.get("pid")) and is_pid_running(int(gw["pid"]))
+        port_open = bool(gw.get("port")) and is_port_open(SERVICE_HOST, int(gw["port"]))
+        if pid_running or port_open:
+            save_registry(REGISTRY_PATH, reg)
+            return {"ok": True, "running": True, "pid": gw["pid"]}
         gw["pid"] = None
         gw["started_at"] = None
-        save_registry(REGISTRY_PATH, reg)
-        status = _status_for_record(gw)
 
-    return {"ok": True, **status}
+    save_registry(REGISTRY_PATH, reg)
+    return {"ok": True, "running": False, "pid": None}
 
 
 @app.get("/api/profiles/{name}/channels")
@@ -1105,13 +1047,12 @@ def instance_manifest(runtime: str, name: str):
 
     if runtime == "hermes":
         services = [
-            {"key": "dashboard", "title": "Dashboard"},
             {"key": "gateway", "title": "Gateway"},
         ]
         tabs = ["env", "config", "soul", "memories", "skills", "channels", "cron", "logs", "sessions"]
     elif runtime == "nanoghost":
         services = [{"key": "gateway", "title": "Gateway"}]
-        tabs = ["env", "skills", "mcp", "channels"]
+        tabs = ["env", "skills", "prompts", "mcp", "channels"]
 
     return {
         "ok": True,
@@ -1209,10 +1150,7 @@ def instance_rename(runtime: str, name: str, body: InstanceRenameBody):
     reg = load_registry(REGISTRY_PATH)
 
     if runtime == "hermes":
-        dash = _proc_record(reg, "hermes", old_name, "dashboard")
         gw = _proc_record(reg, "hermes", old_name, "gateway")
-        if dash.get("pid") and is_pid_running(int(dash["pid"])):
-            raise HTTPException(status_code=409, detail="instance is running")
         if gw.get("pid") and is_pid_running(int(gw["pid"])):
             raise HTTPException(status_code=409, detail="instance is running")
     elif runtime == "nanoghost":
@@ -1343,16 +1281,9 @@ def instance_service_start(runtime: str, name: str, service: str):
             "--port",
             str(int(rec["port"])),
         ]
-        logger.info("starting nanoghost gateway %s/%s port=%s", name, "gateway", rec["port"])
-        sr, err = spawn_healthy(argv, cwd=str(run_py.parent), env=env, port=int(rec["port"]), host=SERVICE_HOST)
-        if err is not None:
-            logger.error("nanoghost gateway %s/%s failed to start: %s", name, "gateway", err)
-            kill_pid_tree(sr.pid)
-            raise HTTPException(
-                status_code=500,
-                detail=err,
-            )
-        logger.info("nanoghost gateway %s/%s started pid=%s", name, "gateway", sr.pid)
+        logger.info("starting nanoghost gateway %s/%s port=%s argv=%s", name, "gateway", rec["port"], " ".join(argv))
+        sr = spawn_logged(argv, cwd=str(run_py.parent), env=env, tag=f"ng-gateway-{name}")
+        logger.info("nanoghost gateway %s/%s pid=%s", name, "gateway", sr.pid)
         rec["pid"] = sr.pid
         rec["started_at"] = int(time.time())
         save_registry(REGISTRY_PATH, reg)
@@ -1379,6 +1310,23 @@ def instance_service_stop(runtime: str, name: str, service: str):
         rec["started_at"] = None
         save_registry(REGISTRY_PATH, reg)
         return {"ok": True}
+    raise HTTPException(status_code=404, detail="service not found")
+
+
+@app.post("/api/instances/{runtime}/{name}/services/{service}/restart")
+def instance_service_restart(runtime: str, name: str, service: str):
+    runtime = _normalize_runtime(runtime)
+    service = (service or "").strip().lower()
+    if runtime == "hermes":
+        if service == "gateway":
+            gateway_stop(name)
+            return gateway_start(name)
+        raise HTTPException(status_code=404, detail="service not found")
+    if runtime == "nanoghost":
+        if service != "gateway":
+            raise HTTPException(status_code=404, detail="service not found")
+        instance_service_stop(runtime, name, service)
+        return instance_service_start(runtime, name, service)
     raise HTTPException(status_code=404, detail="service not found")
 
 
@@ -1432,6 +1380,69 @@ def instance_channels_put(runtime: str, name: str, body: ChannelConfigPutBody):
     tmp = ch_path.with_suffix(ch_path.suffix + ".tmp")
     tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(ch_path)
+    return {"ok": True}
+
+
+@app.get("/api/instances/{runtime}/{name}/prompts")
+def instance_prompts_list(runtime: str, name: str):
+    runtime = _normalize_runtime(runtime)
+    name = (name or "").strip()
+    if runtime != "nanoghost":
+        raise HTTPException(status_code=404, detail="not supported")
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    prompts_dir = inst / "prompts"
+    files = []
+    if prompts_dir.is_dir():
+        for f in sorted(prompts_dir.iterdir()):
+            if f.is_file() and f.suffix == ".md":
+                files.append({
+                    "name": f.name,
+                    "path": str(f),
+                    "size": f.stat().st_size,
+                    "mtime": f.stat().st_mtime,
+                })
+    return {"ok": True, "items": files, "dir": str(prompts_dir)}
+
+
+@app.get("/api/instances/{runtime}/{name}/prompts/{filename:path}")
+def instance_prompt_get(runtime: str, name: str, filename: str):
+    runtime = _normalize_runtime(runtime)
+    name = (name or "").strip()
+    if runtime != "nanoghost":
+        raise HTTPException(status_code=404, detail="not supported")
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    file_path = (inst / "prompts" / filename).resolve()
+    prompts_dir = (inst / "prompts").resolve()
+    if not str(file_path).startswith(str(prompts_dir)):
+        raise HTTPException(status_code=403, detail="path traversal denied")
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="prompt not found")
+    return {"ok": True, "name": filename, "path": str(file_path), "raw": file_path.read_text(encoding="utf-8")}
+
+
+class PromptPutBody(BaseModel):
+    raw: str
+
+
+@app.put("/api/instances/{runtime}/{name}/prompts/{filename:path}")
+def instance_prompt_put(runtime: str, name: str, filename: str, body: PromptPutBody):
+    runtime = _normalize_runtime(runtime)
+    name = (name or "").strip()
+    if runtime != "nanoghost":
+        raise HTTPException(status_code=404, detail="not supported")
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    file_path = (inst / "prompts" / filename).resolve()
+    prompts_dir = (inst / "prompts").resolve()
+    if not str(file_path).startswith(str(prompts_dir)):
+        raise HTTPException(status_code=403, detail="path traversal denied")
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(body.raw, encoding="utf-8")
     return {"ok": True}
 
 
@@ -1780,7 +1791,20 @@ def runtime_instance_create(runtime: str, body: RuntimeInstanceCreateBody):
 
         env_path = inst / ".env"
         if not env_path.exists():
-            env_path.write_text("", encoding="utf-8")
+            src_env = _nanoghost_repo_dir() / ".env" if _nanoghost_repo_dir() else None
+            if src_env and src_env.is_file():
+                env_path.write_text(src_env.read_text(encoding="utf-8"), encoding="utf-8")
+            else:
+                env_path.write_text("", encoding="utf-8")
+
+        prompts_dir = inst / "prompts"
+        src_prompts = (_nanoghost_repo_dir() / "prompts") if _nanoghost_repo_dir() else None
+        if src_prompts and src_prompts.is_dir():
+            for f in src_prompts.iterdir():
+                if f.is_file() and f.suffix == ".md":
+                    dest = prompts_dir / f.name
+                    if not dest.exists():
+                        dest.write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
 
         return {"ok": True, "name": name, "path": str(inst)}
     if runtime == "openclaw":
@@ -1951,8 +1975,6 @@ def runtime_process_start(runtime: str, name: str, proc: str):
     name = (name or "").strip()
     proc = (proc or "").strip().lower()
     if runtime == "hermes":
-        if proc == "dashboard":
-            return dashboard_start(name)
         if proc == "gateway":
             return gateway_start(name)
         raise HTTPException(status_code=404, detail="process not found")
@@ -1984,16 +2006,9 @@ def runtime_process_start(runtime: str, name: str, proc: str):
         else:
             env.pop("AGENT_MODE", None)
         argv = [sys.executable, str(run_py), "-I", str(inst)]
-        logger.info("starting nanoghost %s/%s", name, proc)
-        sr, err = spawn_healthy(argv, cwd=str(run_py.parent), env=env)
-        if err is not None:
-            logger.error("nanoghost %s/%s failed to start: %s", name, proc, err)
-            kill_pid_tree(sr.pid)
-            raise HTTPException(
-                status_code=500,
-                detail=err,
-            )
-        logger.info("nanoghost %s/%s started pid=%s", name, proc, sr.pid)
+        logger.info("starting nanoghost %s/%s argv=%s", name, proc, " ".join(argv))
+        sr = spawn_logged(argv, cwd=str(run_py.parent), env=env, tag=f"ng-{proc}-{name}")
+        logger.info("nanoghost %s/%s pid=%s", name, proc, sr.pid)
         rec["pid"] = sr.pid
         rec["started_at"] = int(time.time())
         save_registry(REGISTRY_PATH, reg)
@@ -2007,8 +2022,6 @@ def runtime_process_stop(runtime: str, name: str, proc: str):
     name = (name or "").strip()
     proc = (proc or "").strip().lower()
     if runtime == "hermes":
-        if proc == "dashboard":
-            return dashboard_stop(name)
         if proc == "gateway":
             return gateway_stop(name)
         raise HTTPException(status_code=404, detail="process not found")
@@ -2034,8 +2047,6 @@ def runtime_process_status(runtime: str, name: str, proc: str):
     name = (name or "").strip()
     proc = (proc or "").strip().lower()
     if runtime == "hermes":
-        if proc == "dashboard":
-            return dashboard_status(name)
         if proc == "gateway":
             return gateway_status(name)
         raise HTTPException(status_code=404, detail="process not found")

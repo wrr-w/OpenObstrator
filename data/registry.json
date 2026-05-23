@@ -16,8 +16,8 @@
     "xxt": {
       "gateway": {
         "port": 19001,
-        "pid": null,
-        "started_at": null
+        "pid": 27332,
+        "started_at": 1779509635
       }
     }
   },
@@ -39,8 +39,8 @@
         "xxt": {
           "gateway": {
             "port": 19001,
-            "pid": null,
-            "started_at": null
+            "pid": 27332,
+            "started_at": 1779509635
           }
         }
       }

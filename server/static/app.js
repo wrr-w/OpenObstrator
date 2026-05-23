@@ -55,17 +55,6 @@ function setPill(el, running, suffix) {
   el.classList.add("bad")
 }
 
-function setLink(el, port) {
-  if (!el) return
-  if (!port) {
-    el.textContent = ""
-    el.removeAttribute("href")
-    return
-  }
-  const url = `http://127.0.0.1:${port}/`
-  el.textContent = url
-  el.href = url
-}
 
 function parseInitialSelection() {
   const qp = new URLSearchParams(window.location.search)
@@ -169,6 +158,12 @@ async function svcStart(runtime, name, service) {
 
 async function svcStop(runtime, name, service) {
   return apiJson(`/api/instances/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}/services/${encodeURIComponent(service)}/stop`, {
+    method: "POST",
+  })
+}
+
+async function svcRestart(runtime, name, service) {
+  return apiJson(`/api/instances/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}/services/${encodeURIComponent(service)}/restart`, {
     method: "POST",
   })
 }
@@ -386,7 +381,6 @@ function renderInstanceList({ instances, statuses, activeKey, filter }) {
     }
 
     if (it.runtime === "hermes") {
-      addDot(Boolean(st.dashboard?.running))
       addDot(Boolean(st.gateway?.running))
     } else if (it.runtime === "nanoghost") {
       addDot(Boolean(st.gateway?.running))
@@ -497,12 +491,61 @@ function applyTabs(allowedTabs) {
   for (const p of panels) p.classList.toggle("active", p.id === "panel-env" && p.style.display !== "none")
 }
 
+function clearPanelContents() {
+  const envBody = document.getElementById("envBody")
+  if (envBody) envBody.textContent = ""
+  const skillsBody = document.getElementById("skillsBody")
+  if (skillsBody) skillsBody.textContent = ""
+  const chBody = document.getElementById("channelsBody")
+  if (chBody) chBody.textContent = ""
+  const promptsBody = document.getElementById("promptsBody")
+  if (promptsBody) promptsBody.textContent = ""
+}
+
+function getActiveTab() {
+  const activeBtn = document.querySelector(".tabBtn.active")
+  return activeBtn ? activeBtn.dataset.tab : "env"
+}
+
+async function loadActiveTab() {
+  const tab = getActiveTab()
+  if (tab) await loadTabData(tab)
+}
+
+async function loadTabData(tab) {
+  const rt = _activeRuntime
+  const name = _activeName
+  if (!rt || !name) return
+  switch (tab) {
+    case "env": if (!_loadedTabs.has("env")) { _loadedTabs.add("env"); await refreshEnv() } break
+    case "skills": if (!_loadedTabs.has("skills")) { _loadedTabs.add("skills"); await refreshSkills() } break
+    case "channels": if (!_loadedTabs.has("channels")) { _loadedTabs.add("channels"); await refreshChannels() } break
+    case "mcp": if (!_loadedTabs.has("mcp")) { _loadedTabs.add("mcp"); await refreshNanoGhostMcp() } break
+    case "prompts": if (!_loadedTabs.has("prompts")) { _loadedTabs.add("prompts"); await refreshPrompts() } break
+    case "logs":
+      if (rt === "hermes") {
+        await refreshHermesExtras()
+        await refreshManagerLogs(name)
+        startLogAutoRefresh(name)
+      }
+      break
+    case "cron":
+    case "sessions":
+      if (rt === "hermes") await refreshHermesExtras()
+      break
+    default:
+      if (rt === "hermes" && !_loadedHermesExtras) {
+        _loadedHermesExtras = true
+        await refreshHermesExtras()
+      }
+      break
+  }
+}
+
 function applyServices(services) {
   const keys = new Set((services || []).map((s) => s.key))
   const cards = document.getElementById("cardsServices")
-  const dashCard = document.getElementById("dashPill")?.closest(".card")
   const gwCard = document.getElementById("gwPill")?.closest(".card")
-  if (dashCard) dashCard.style.display = keys.has("dashboard") ? "" : "none"
   if (gwCard) gwCard.style.display = keys.has("gateway") ? "" : "none"
   if (cards) cards.style.display = keys.size > 0 ? "" : "none"
 }
@@ -514,11 +557,36 @@ function bindTabs() {
       if (btn.style.display === "none") return
       const tab = btn.dataset.tab
       if (!tab) return
+      if (tab !== "logs") stopLogAutoRefresh()
       for (const b of btns) b.classList.toggle("active", b === btn)
       const panels = Array.from(document.querySelectorAll(".panel"))
       for (const p of panels) p.classList.toggle("active", p.id === `panel-${tab}`)
+      loadTabData(tab)
     })
   }
+}
+
+function startLogAutoRefresh(name) {
+  stopLogAutoRefresh()
+  _logRefreshTimer = setInterval(() => refreshManagerLogs(name), 3000)
+}
+
+function stopLogAutoRefresh() {
+  if (_logRefreshTimer) { clearInterval(_logRefreshTimer); _logRefreshTimer = null }
+}
+
+async function refreshManagerLogs(name) {
+  try {
+    const r = await apiJson("/api/manager/logs?limit=200", { method: "GET" })
+    const el = document.getElementById("logsOpsBody")
+    if (!el) return
+    const items = r.items || []
+    const filtered = name ? items.filter(line => {
+      const lower = typeof line === "string" ? line : String(line)
+      return lower.includes(name)
+    }) : items
+    el.textContent = filtered.slice(-100).join("\n") || "(暂无操作日志)"
+  } catch {}
 }
 
 function openCreateModal() {
@@ -1533,6 +1601,9 @@ let _activeRuntime = ""
 let _activeName = ""
 let _activeKey = ""
 let _activeManifest = null
+let _loadedTabs = new Set()
+let _loadedHermesExtras = false
+let _logRefreshTimer = null
 
 async function refreshStatuses(instances) {
   const out = {}
@@ -1541,8 +1612,8 @@ async function refreshStatuses(instances) {
       const key = `${it.runtime}:${it.name}`
       try {
         if (it.runtime === "hermes") {
-          const [ds, gs] = await Promise.all([svcStatus("hermes", it.name, "dashboard"), svcStatus("hermes", it.name, "gateway")])
-          out[key] = { dashboard: ds, gateway: gs }
+          const gs = await svcStatus("hermes", it.name, "gateway")
+          out[key] = { gateway: gs }
         } else if (it.runtime === "nanoghost") {
           const gs = await svcStatus("nanoghost", it.name, "gateway")
           out[key] = { gateway: gs }
@@ -1565,14 +1636,19 @@ async function refreshSidebar(filter) {
 }
 
 async function refreshAllFlow() {
+  _loadedTabs = new Set()
+  _loadedHermesExtras = false
   const search = document.getElementById("profileSearch")
+  const tabs = _activeManifest?.tabs || []
   await refreshSidebar(search?.value || "")
   await refreshServices()
-  await refreshEnv()
-  await refreshSkills()
-  if ((_activeManifest?.tabs || []).includes("channels")) await refreshChannels()
-  if ((_activeManifest?.tabs || []).includes("mcp")) await refreshNanoGhostMcp()
-  if (_activeRuntime === "hermes") await refreshHermesExtras()
+  for (const tab of tabs) {
+    if (tab === "cron" || tab === "sessions") continue
+    await loadTabData(tab)
+  }
+  if (_activeRuntime === "hermes" && !tabs.includes("logs")) {
+    await refreshHermesExtras()
+  }
 }
 
 async function refreshServices() {
@@ -1581,14 +1657,6 @@ async function refreshServices() {
   const name = _activeName
   const services = _activeManifest.services || []
   for (const svc of services) {
-    if (svc.key === "dashboard") {
-      if (rt !== "hermes") continue
-      const ds = await svcStatus(rt, name, "dashboard")
-      setPill(document.getElementById("dashPill"), ds.running, ds.port ? `:${ds.port}` : "")
-      setLink(document.getElementById("dashLink"), ds.port)
-      const dh = document.getElementById("dashHint")
-      if (dh) dh.textContent = ds.pid ? `pid: ${ds.pid}` : ""
-    }
     if (svc.key === "gateway") {
       const gs = await svcStatus(rt, name, "gateway")
       setPill(document.getElementById("gwPill"), gs.running, gs.port ? `:${gs.port}` : "")
@@ -1639,6 +1707,140 @@ async function refreshEnv() {
     tr.appendChild(v)
     tr.appendChild(a)
     tbody.appendChild(tr)
+  }
+}
+
+async function refreshPrompts() {
+  const rt = _activeRuntime
+  const name = _activeName
+  try {
+    const r = await apiJson(`/api/instances/${encodeURIComponent(rt)}/${encodeURIComponent(name)}/prompts`, { method: "GET" })
+    const dirEl = document.getElementById("promptsDir")
+    if (dirEl) dirEl.textContent = r.dir ? `dir: ${r.dir}` : ""
+    const body = document.getElementById("promptsBody")
+    if (!body) return
+    body.textContent = ""
+    const items = r.items || []
+    if (items.length === 0) {
+      body.textContent = "暂无 prompt 文件"
+      body.className = "hint"
+      return
+    }
+    body.className = ""
+    for (const f of items) {
+      const block = document.createElement("div")
+      block.style.marginTop = "8px"
+      block.style.border = "1px solid var(--border)"
+      block.style.borderRadius = "8px"
+      block.style.padding = "8px"
+
+      const header = document.createElement("div")
+      header.style.cursor = "pointer"
+      header.style.userSelect = "none"
+      header.style.display = "flex"
+      header.style.alignItems = "center"
+      header.style.gap = "8px"
+      header.style.padding = "4px 0"
+      const arrow = document.createElement("span")
+      arrow.textContent = "▶"
+      arrow.style.fontSize = "11px"
+      const nameSpan = document.createElement("span")
+      nameSpan.style.fontWeight = "700"
+      nameSpan.textContent = f.name
+      header.appendChild(arrow)
+      header.appendChild(nameSpan)
+      block.appendChild(header)
+
+      const editor = document.createElement("div")
+      editor.style.display = "none"
+      const ta = document.createElement("textarea")
+      ta.style.width = "100%"
+      ta.style.minHeight = "200px"
+      ta.style.fontFamily = "monospace"
+      ta.style.fontSize = "13px"
+      ta.style.marginTop = "8px"
+      ta.readOnly = true
+      editor.appendChild(ta)
+      block.appendChild(editor)
+
+      const btnRow = document.createElement("div")
+      btnRow.style.display = "none"
+      btnRow.style.marginTop = "8px"
+      btnRow.style.gap = "8px"
+      btnRow.style.alignItems = "center"
+
+      const editBtn = document.createElement("button")
+      editBtn.textContent = "编辑"
+      const saveBtn = document.createElement("button")
+      saveBtn.textContent = "保存"
+      saveBtn.className = "primary"
+      saveBtn.style.display = "none"
+      const cancelBtn = document.createElement("button")
+      cancelBtn.textContent = "取消"
+      cancelBtn.style.display = "none"
+
+      btnRow.appendChild(editBtn)
+      btnRow.appendChild(saveBtn)
+      btnRow.appendChild(cancelBtn)
+      block.appendChild(btnRow)
+
+      let isEditing = false
+      let originalContent = ""
+
+      editBtn.addEventListener("click", async () => {
+        if (!isEditing) {
+          const data = await apiJson(`/api/instances/${encodeURIComponent(rt)}/${encodeURIComponent(name)}/prompts/${encodeURIComponent(f.name)}`, { method: "GET" })
+          ta.value = data.raw || ""
+          ta.readOnly = false
+          originalContent = ta.value
+          isEditing = true
+          editBtn.textContent = "取消"
+          saveBtn.style.display = ""
+          cancelBtn.style.display = "none"  // editBtn now acts as cancel
+        } else {
+          ta.value = originalContent
+          ta.readOnly = true
+          isEditing = false
+          editBtn.textContent = "编辑"
+          saveBtn.style.display = "none"
+        }
+      })
+
+      saveBtn.addEventListener("click", async () => {
+        try {
+          setToast("")
+          await apiJson(`/api/instances/${encodeURIComponent(rt)}/${encodeURIComponent(name)}/prompts/${encodeURIComponent(f.name)}`, {
+            method: "PUT",
+            body: JSON.stringify({ raw: ta.value }),
+          })
+          originalContent = ta.value
+          ta.readOnly = true
+          isEditing = false
+          editBtn.textContent = "编辑"
+          saveBtn.style.display = "none"
+          setToast("已保存")
+        } catch (e) {
+          setToast(String(e))
+        }
+      })
+
+      header.addEventListener("click", () => {
+        const isOpen = editor.style.display !== "none"
+        editor.style.display = isOpen ? "none" : ""
+        btnRow.style.display = isOpen ? "none" : ""
+        arrow.textContent = isOpen ? "▶" : "▼"
+        if (!isOpen && !ta.value) {
+          apiJson(`/api/instances/${encodeURIComponent(rt)}/${encodeURIComponent(name)}/prompts/${encodeURIComponent(f.name)}`, { method: "GET" }).then(data => {
+            ta.value = data.raw || ""
+            originalContent = ta.value
+          }).catch(() => {})
+        }
+      })
+
+      body.appendChild(block)
+    }
+  } catch (e) {
+    setToast(String(e))
   }
 }
 
@@ -2146,6 +2348,9 @@ async function selectInstance(runtime, name) {
   _activeRuntime = runtime
   _activeName = name
   _activeKey = `${runtime}:${name}`
+  _loadedTabs = new Set()
+  _loadedHermesExtras = false
+  stopLogAutoRefresh()
   setQuery(runtime, name)
 
   _activeManifest = await loadManifest(runtime, name)
@@ -2156,13 +2361,10 @@ async function selectInstance(runtime, name) {
   const rootText = runtime === "hermes" ? "runtime: hermes" : runtime === "nanoghost" ? "runtime: nanoghost" : `runtime: ${runtime}`
   setActiveHeader(inst || _activeManifest.instance, rootText)
 
+  clearPanelContents()
   await refreshSidebar(document.getElementById("profileSearch")?.value || "")
   await refreshServices()
-  await refreshEnv()
-  await refreshSkills()
-  if ((_activeManifest.tabs || []).includes("channels")) await refreshChannels()
-  if ((_activeManifest.tabs || []).includes("mcp")) await refreshNanoGhostMcp()
-  if (runtime === "hermes") await refreshHermesExtras()
+  await loadActiveTab()
 }
 
 function bindActions() {
@@ -2212,34 +2414,9 @@ function bindActions() {
       renderInstanceList({ instances: _instances, statuses: _statuses, activeKey: _activeKey, filter: search.value })
     })
 
-  const dashStart = document.getElementById("dashStart")
-  const dashStop = document.getElementById("dashStop")
   const gwStart = document.getElementById("gwStart")
   const gwStop = document.getElementById("gwStop")
-
-  if (dashStart)
-    dashStart.addEventListener("click", async () => {
-      try {
-        setToast("")
-        await svcStart("hermes", _activeName, "dashboard")
-        await refreshSidebar(search?.value || "")
-        await refreshServices()
-      } catch (e) {
-        setToast(String(e))
-      }
-    })
-
-  if (dashStop)
-    dashStop.addEventListener("click", async () => {
-      try {
-        setToast("")
-        await svcStop("hermes", _activeName, "dashboard")
-        await refreshSidebar(search?.value || "")
-        await refreshServices()
-      } catch (e) {
-        setToast(String(e))
-      }
-    })
+  const gwRestart = document.getElementById("gwRestart")
 
   if (gwStart)
     gwStart.addEventListener("click", async () => {
@@ -2258,6 +2435,18 @@ function bindActions() {
       try {
         setToast("")
         await svcStop(_activeRuntime, _activeName, "gateway")
+        await refreshSidebar(search?.value || "")
+        await refreshServices()
+      } catch (e) {
+        setToast(String(e))
+      }
+    })
+
+  if (gwRestart)
+    gwRestart.addEventListener("click", async () => {
+      try {
+        setToast("")
+        await svcRestart(_activeRuntime, _activeName, "gateway")
         await refreshSidebar(search?.value || "")
         await refreshServices()
       } catch (e) {

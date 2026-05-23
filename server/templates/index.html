@@ -168,6 +168,7 @@
       button:hover { background: rgba(255,255,255,0.07); }
       button.primary { border-color: rgba(125, 211, 252, 0.45); background: rgba(125, 211, 252, 0.10); }
       button.danger { border-color: rgba(255, 120, 110, 0.45); background: rgba(255, 120, 110, 0.10); }
+      button.secondary { border-color: rgba(255, 255, 255, 0.2); background: rgba(255, 255, 255, 0.04); }
       .cards { margin-top: 14px; display: grid; grid-template-columns: 1fr; gap: 12px; }
       @media (min-width: 980px) { .cards { grid-template-columns: 1fr 1fr; } }
       .card {
@@ -260,20 +261,6 @@
         <section class="cards" id="cardsServices">
           <div class="card">
             <div class="cardHead">
-              <div class="cardTitle">Dashboard</div>
-              <span id="dashPill" class="pill">未知</span>
-            </div>
-            <div class="cardBody">
-              <div class="row">
-                <button id="dashStart" class="primary">启动</button>
-                <button id="dashStop" class="danger">停止</button>
-                <a id="dashLink" class="hint" target="_blank" rel="noreferrer"></a>
-              </div>
-              <div class="hint" id="dashHint"></div>
-            </div>
-          </div>
-          <div class="card">
-            <div class="cardHead">
               <div class="cardTitle">Gateway</div>
               <span id="gwPill" class="pill">未知</span>
             </div>
@@ -281,6 +268,7 @@
               <div class="row">
                 <button id="gwStart" class="primary">启动</button>
                 <button id="gwStop" class="danger">停止</button>
+                <button id="gwRestart" class="secondary">重启</button>
               </div>
               <div class="hint" id="gwHint"></div>
             </div>
@@ -293,6 +281,7 @@
           <button class="tabBtn" data-tab="soul">Soul</button>
           <button class="tabBtn" data-tab="memories">Memories</button>
           <button class="tabBtn" data-tab="skills">Skills</button>
+          <button class="tabBtn" data-tab="prompts">Prompts</button>
           <button class="tabBtn" data-tab="mcp">MCP</button>
           <button class="tabBtn" data-tab="channels">Channels</button>
           <button class="tabBtn" data-tab="cron">Cron</button>
@@ -389,21 +378,23 @@
           </div>
         </section>
 
+        <section id="panel-prompts" class="panel">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">Prompts</div>
+              <span id="promptsDir" class="hint"></span>
+            </div>
+            <div class="cardBody" id="promptsBody"></div>
+          </div>
+        </section>
+
         <section id="panel-skills" class="panel">
           <div class="card">
             <div class="cardHead">
               <div class="cardTitle">Skills</div>
-              <span class="hint">按路径分组，修改后点确认保存生效</span>
+              <span id="skillsHint" class="hint"></span>
             </div>
-            <div class="cardBody">
-              <div class="row">
-                <input id="skillSearch" placeholder="过滤 skills..." />
-              </div>
-              <div id="skillsBody"></div>
-              <div class="row" style="margin-top:10px">
-                <button id="skillsSaveBatch" class="primary">确认保存</button>
-              </div>
-            </div>
+            <div class="cardBody" id="skillsBody"></div>
           </div>
         </section>
 
@@ -468,7 +459,16 @@
         <section id="panel-logs" class="panel">
           <div class="card">
             <div class="cardHead">
-              <div class="cardTitle">日志</div>
+              <div class="cardTitle">操作日志</div>
+              <label style="font-size:12px;display:flex;align-items:center;gap:4px">
+                <input type="checkbox" id="logAutoRefresh" checked /> 自动刷新
+              </label>
+            </div>
+            <div class="cardBody" id="logsOpsBody" style="max-height:300px;overflow:auto;font-size:12px;font-family:monospace;white-space:pre-wrap"></div>
+          </div>
+          <div class="card" style="margin-top:10px">
+            <div class="cardHead">
+              <div class="cardTitle">实例日志</div>
               <span id="logsDir" class="hint"></span>
             </div>
             <div class="cardBody" id="logsBody"></div>
