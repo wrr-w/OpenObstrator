@@ -34,7 +34,7 @@ from server.logbuffer import get_log_lines, install_log_buffer
 from server.ports import allocate_port, is_port_open
 from server.profiles import list_profiles
 from server.profile_create import create_profile_clone_default
-from server.processes import is_pid_running, kill_pid_tree, spawn, spawn_capture, spawn_with, spawn_with_capture
+from server.processes import is_pid_running, kill_pid_tree, spawn, spawn_healthy, spawn_with
 from server.registry import load_registry, save_registry
 from server.soulfile import read_raw_text, write_raw_text
 from server.skills import list_global_skills_runtime
@@ -463,30 +463,6 @@ def _collect_used_ports(reg: dict) -> set[int]:
     return used
 
 
-def _wait_healthy(*, pid: int, port: int | None = None, timeout: float = 6.0) -> str | None:
-    """Poll PID (and optionally port) until process is confirmed healthy.
-
-    Returns ``None`` if healthy within *timeout*, or an error string otherwise.
-    """
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        alive = is_pid_running(pid)
-        if port is not None:
-            listening = is_port_open(SERVICE_HOST, port)
-        else:
-            listening = True
-        if alive and listening:
-            return None
-        if not alive:
-            return "process exited before becoming healthy"
-        time.sleep(0.4)
-    if port is not None and not is_port_open(SERVICE_HOST, port):
-        return f"port {port} did not open within {timeout}s"
-    if not is_pid_running(pid):
-        return "process exited before becoming healthy"
-    return None
-
-
 def _status_for_record(rec: dict) -> dict:
     port = rec.get("port")
     pid = rec.get("pid")
@@ -549,19 +525,14 @@ def dashboard_start(name: str):
         "--skip-build",
     ]
     logger.info("starting hermes dashboard %s port=%s", name, dash["port"])
-    sr, err = spawn_capture(argv)
+    sr, err = spawn_healthy(argv, port=int(dash["port"]), host=SERVICE_HOST)
     if err is not None:
         logger.error("hermes dashboard %s failed to start: %s", name, err)
+        kill_pid_tree(sr.pid)
         raise HTTPException(
             status_code=500,
-            detail=f"process exited during startup:\n{err}",
+            detail=err,
         )
-    logger.info("hermes dashboard %s started pid=%s, waiting for health", name, sr.pid)
-    health_err = _wait_healthy(pid=sr.pid, port=int(dash["port"]))
-    if health_err:
-        logger.error("hermes dashboard %s unhealthy: %s", name, health_err)
-        kill_pid_tree(sr.pid)
-        raise HTTPException(status_code=500, detail=health_err)
     logger.info("hermes dashboard %s started pid=%s", name, sr.pid)
     dash["pid"] = sr.pid
     dash["started_at"] = int(time.time())
@@ -631,19 +602,14 @@ def gateway_start(name: str):
         "--quiet",
     ]
     logger.info("starting hermes gateway %s port=%s", name, gw["port"])
-    sr, err = spawn_capture(argv)
+    sr, err = spawn_healthy(argv, port=int(gw["port"]), host=SERVICE_HOST)
     if err is not None:
         logger.error("hermes gateway %s failed to start: %s", name, err)
+        kill_pid_tree(sr.pid)
         raise HTTPException(
             status_code=500,
-            detail=f"process exited during startup:\n{err}",
+            detail=err,
         )
-    logger.info("hermes gateway %s started pid=%s, waiting for health", name, sr.pid)
-    health_err = _wait_healthy(pid=sr.pid, port=int(gw["port"]))
-    if health_err:
-        logger.error("hermes gateway %s unhealthy: %s", name, health_err)
-        kill_pid_tree(sr.pid)
-        raise HTTPException(status_code=500, detail=health_err)
     logger.info("hermes gateway %s started pid=%s", name, sr.pid)
     gw["pid"] = sr.pid
     gw["started_at"] = int(time.time())
@@ -1378,19 +1344,14 @@ def instance_service_start(runtime: str, name: str, service: str):
             str(int(rec["port"])),
         ]
         logger.info("starting nanoghost gateway %s/%s port=%s", name, "gateway", rec["port"])
-        sr, err = spawn_with_capture(argv, cwd=str(run_py.parent), env=env)
+        sr, err = spawn_healthy(argv, cwd=str(run_py.parent), env=env, port=int(rec["port"]), host=SERVICE_HOST)
         if err is not None:
             logger.error("nanoghost gateway %s/%s failed to start: %s", name, "gateway", err)
+            kill_pid_tree(sr.pid)
             raise HTTPException(
                 status_code=500,
-                detail=f"process exited during startup:\n{err}",
+                detail=err,
             )
-        logger.info("nanoghost gateway %s/%s started pid=%s, waiting for health", name, "gateway", sr.pid)
-        health_err = _wait_healthy(pid=sr.pid, port=int(rec["port"]))
-        if health_err:
-            logger.error("nanoghost gateway %s/%s unhealthy: %s", name, "gateway", health_err)
-            kill_pid_tree(sr.pid)
-            raise HTTPException(status_code=500, detail=health_err)
         logger.info("nanoghost gateway %s/%s started pid=%s", name, "gateway", sr.pid)
         rec["pid"] = sr.pid
         rec["started_at"] = int(time.time())
@@ -2024,19 +1985,14 @@ def runtime_process_start(runtime: str, name: str, proc: str):
             env.pop("AGENT_MODE", None)
         argv = [sys.executable, str(run_py), "-I", str(inst)]
         logger.info("starting nanoghost %s/%s", name, proc)
-        sr, err = spawn_with_capture(argv, cwd=str(run_py.parent), env=env)
+        sr, err = spawn_healthy(argv, cwd=str(run_py.parent), env=env)
         if err is not None:
             logger.error("nanoghost %s/%s failed to start: %s", name, proc, err)
+            kill_pid_tree(sr.pid)
             raise HTTPException(
                 status_code=500,
-                detail=f"process exited during startup:\n{err}",
+                detail=err,
             )
-        logger.info("nanoghost %s/%s started pid=%s, waiting for health", name, proc, sr.pid)
-        health_err = _wait_healthy(pid=sr.pid)
-        if health_err:
-            logger.error("nanoghost %s/%s unhealthy: %s", name, proc, health_err)
-            kill_pid_tree(sr.pid)
-            raise HTTPException(status_code=500, detail=health_err)
         logger.info("nanoghost %s/%s started pid=%s", name, proc, sr.pid)
         rec["pid"] = sr.pid
         rec["started_at"] = int(time.time())

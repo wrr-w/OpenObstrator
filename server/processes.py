@@ -57,15 +57,6 @@ def spawn(argv: Sequence[str]) -> SpawnResult:
     return SpawnResult(pid=int(p.pid), argv=list(argv))
 
 
-def spawn_capture(
-    argv: Sequence[str],
-    *,
-    grace_period: float = 1.5,
-) -> tuple[SpawnResult, str | None]:
-    """Spawn without custom env, capturing stderr."""
-    return spawn_with_capture(argv, cwd=None, env=None, grace_period=grace_period)
-
-
 def spawn_with(
     argv: Sequence[str],
     *,
@@ -82,21 +73,25 @@ def spawn_with(
     return SpawnResult(pid=int(p.pid), argv=list(argv))
 
 
-def spawn_with_capture(
+def spawn_healthy(
     argv: Sequence[str],
     *,
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
-    grace_period: float = 1.5,
+    port: int | None = None,
+    host: str = "127.0.0.1",
+    timeout: float = 7.0,
 ) -> tuple[SpawnResult, str | None]:
-    """Spawn a process with stderr captured.
+    """Spawn a process, capture stderr, and confirm it stays healthy.
 
-    If the process exits within *grace_period* seconds, returns
-    ``(result, stderr_text)`` so the caller can inspect startup errors.
+    Polls PID and optionally *port* for up to *timeout* seconds.
 
-    If the process is still running after the grace period, returns
-    ``(result, None)`` — the process appears to have started OK.
+    Returns ``(SpawnResult, None)`` if the process stays alive (and the
+    port opens, if given).  Returns ``(SpawnResult, error_msg)`` if the
+    process dies within the window — *error_msg* includes stderr output.
     """
+    from server.ports import is_port_open
+
     p = subprocess.Popen(
         list(argv),
         cwd=cwd,
@@ -105,10 +100,32 @@ def spawn_with_capture(
         stderr=subprocess.PIPE,
     )
     sr = SpawnResult(pid=int(p.pid), argv=list(argv))
-    try:
-        _, err = p.communicate(timeout=grace_period)
-    except subprocess.TimeoutExpired:
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        ret = p.poll()
+        if ret is not None:
+            err = _read_stderr(p)
+            return sr, f"exited code {ret}" + (f":\n{err}" if err else "")
+        if not is_pid_running(sr.pid):
+            err = _read_stderr(p)
+            return sr, f"process died" + (f":\n{err}" if err else "")
+        if port is not None and is_port_open(host, port):
+            p.stderr.close()
+            return sr, None
+        time.sleep(0.4)
+
+    # Timeout reached — final check
+    if port is not None and not is_port_open(host, port):
         p.stderr.close()
-        return sr, None
-    text = (err or b"").decode("utf-8", errors="replace").strip()
-    return sr, text or None
+        return sr, f"port {port} did not open within {timeout}s"
+    if not is_pid_running(sr.pid):
+        err = _read_stderr(p)
+        return sr, f"process died" + (f":\n{err}" if err else "")
+    p.stderr.close()
+    return sr, None
+
+
+def _read_stderr(p: subprocess.Popen) -> str:
+    _, err = p.communicate()
+    return (err or b"").decode("utf-8", errors="replace").strip()
