@@ -62,3 +62,4 @@ let _activeManifest = null
 let _loadedTabs = new Set()
 let _loadedHermesExtras = false
 let _logRefreshTimer = null
+let _ngGraph = null

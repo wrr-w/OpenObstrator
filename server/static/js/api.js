@@ -203,3 +203,25 @@ async function ngMcpTools(name, serverId) {
     { method: "GET" }
   )
 }
+
+// NanoGhost Memory
+async function loadNgMemoryRaw(name) {
+  return apiJson(`/api/instances/nanoghost/${encodeURIComponent(name)}/memory/raw`, { method: "GET" })
+}
+
+async function saveNgMemoryRaw(name, raw) {
+  return apiJson(`/api/instances/nanoghost/${encodeURIComponent(name)}/memory/raw`, {
+    method: "PUT",
+    body: JSON.stringify({ raw }),
+  })
+}
+
+async function loadNgMemoryCards(name) {
+  return apiJson(`/api/instances/nanoghost/${encodeURIComponent(name)}/memory/cards`, { method: "GET" })
+}
+
+async function loadNgMemoryGraph(name) {
+  return apiJson(`/api/instances/nanoghost/${encodeURIComponent(name)}/memory/graph`, { method: "GET" })
+}
+
+

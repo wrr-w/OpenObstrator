@@ -350,30 +350,73 @@
         </section>
 
         <section id="panel-memories" class="panel">
-          <div class="card">
-            <div class="cardHead">
-              <div class="cardTitle">memories/USER.md (raw)</div>
-              <span id="userMemPath" class="hint"></span>
-            </div>
-            <div class="cardBody">
-              <div class="row">
-                <button id="userMemSave" class="primary">保存</button>
+          <!-- Hermes 记忆 -->
+          <div id="hermes-memories-block">
+            <div class="card">
+              <div class="cardHead">
+                <div class="cardTitle">memories/USER.md (raw)</div>
+                <span id="userMemPath" class="hint"></span>
               </div>
-              <textarea id="userMemRaw" spellcheck="false"></textarea>
-              <div class="hint">条目分隔符为：空行 + § + 空行（即 \n§\n）</div>
+              <div class="cardBody">
+                <div class="row">
+                  <button id="userMemSave" class="primary">保存</button>
+                </div>
+                <textarea id="userMemRaw" spellcheck="false"></textarea>
+                <div class="hint">条目分隔符为：空行 + § + 空行（即 \n§\n）</div>
+              </div>
+            </div>
+            <div class="card" style="margin-top:12px">
+              <div class="cardHead">
+                <div class="cardTitle">memories/MEMORY.md (raw)</div>
+                <span id="memoryMemPath" class="hint"></span>
+              </div>
+              <div class="cardBody">
+                <div class="row">
+                  <button id="memoryMemSave" class="primary">保存</button>
+                </div>
+                <textarea id="memoryMemRaw" spellcheck="false"></textarea>
+                <div class="hint">条目分隔符为：空行 + § + 空行（即 \n§\n）</div>
+              </div>
             </div>
           </div>
-          <div class="card" style="margin-top:12px">
-            <div class="cardHead">
-              <div class="cardTitle">memories/MEMORY.md (raw)</div>
-              <span id="memoryMemPath" class="hint"></span>
-            </div>
-            <div class="cardBody">
-              <div class="row">
-                <button id="memoryMemSave" class="primary">保存</button>
+          <!-- NanoGhost 记忆 -->
+          <div id="nanoghost-memories-block" style="display:none">
+            <div class="card">
+              <div class="cardHead">
+                <div class="cardTitle">memory.md (raw)</div>
+                <span id="ngMemPath" class="hint"></span>
               </div>
-              <textarea id="memoryMemRaw" spellcheck="false"></textarea>
-              <div class="hint">条目分隔符为：空行 + § + 空行（即 \n§\n）</div>
+              <div class="cardBody">
+                <div class="row">
+                  <button id="ngMemSave" class="primary">保存</button>
+                  <button id="ngMemRefresh" class="secondary">刷新</button>
+                </div>
+                <textarea id="ngMemRaw" spellcheck="false"></textarea>
+                <div class="hint">格式：## section_name\n- item1\n- item2</div>
+              </div>
+            </div>
+            <div class="card" style="margin-top:12px">
+              <div class="cardHead">
+                <div class="cardTitle">memory.md 记忆分类</div>
+                <span class="hint">## section → items</span>
+              </div>
+              <div class="cardBody" id="ngMemMdBody"></div>
+            </div>
+            <div class="card" style="margin-top:12px">
+              <div class="cardHead">
+                <div class="cardTitle">流程记忆卡片</div>
+                <span id="ngMemCardsCount" class="hint"></span>
+              </div>
+              <div class="cardBody" id="ngMemCardsBody"></div>
+            </div>
+            <div class="card" style="margin-top:12px">
+              <div class="cardHead">
+                <div class="cardTitle">流程转移图</div>
+                <span class="hint">SQLite agent_memory_edges</span>
+              </div>
+              <div class="cardBody">
+                <div id="ngMemGraph" style="min-height:400px;border:1px solid var(--border);border-radius:12px;overflow:hidden"></div>
+              </div>
             </div>
           </div>
         </section>
@@ -511,6 +554,7 @@
         <div id="toast"></div>
       </main>
     </div>
+    <script src="/static/g6.min.js"></script>
     <script src="/static/js/helpers.js" defer></script>
     <script src="/static/js/state.js" defer></script>
     <script src="/static/js/api.js" defer></script>

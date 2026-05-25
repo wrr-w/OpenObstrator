@@ -6,7 +6,7 @@ async function refreshAllFlow() {
   await refreshSidebar(search?.value || "")
   await refreshServices()
   for (const tab of tabs) {
-    if (tab === "cron" || tab === "sessions") continue
+    if (tab === "cron" || tab === "sessions" || tab === "memories") continue
     await loadTabData(tab)
   }
   if (_activeRuntime === "hermes" && !tabs.includes("logs")) {
@@ -297,6 +297,30 @@ function bindActions() {
       } catch (e) {
         setToast(String(e))
       }
+    })
+
+  const ngMemSaveBtn = document.getElementById("ngMemSave")
+  if (ngMemSaveBtn)
+    ngMemSaveBtn.addEventListener("click", async () => {
+      const name = _activeName
+      if (!name || _activeRuntime !== "nanoghost") return
+      const ta = document.getElementById("ngMemRaw")
+      if (!ta) return
+      try {
+        setToast("")
+        await saveNgMemoryRaw(name, ta.value)
+        setToast("已保存")
+      } catch (e) {
+        setToast(String(e))
+      }
+    })
+
+  const ngMemRefreshBtn = document.getElementById("ngMemRefresh")
+  if (ngMemRefreshBtn)
+    ngMemRefreshBtn.addEventListener("click", async () => {
+      if (_activeRuntime !== "nanoghost") return
+      _loadedTabs.delete("memories")
+      await refreshNanoGhostMemories()
     })
 
   const gwStartBtn = document.getElementById("gwStart")

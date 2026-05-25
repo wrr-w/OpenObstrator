@@ -695,9 +695,32 @@ def _nanoghost_run_py() -> Path:
     return _nanoghost_repo_dir() / "run.py"
 
 
+def _nanoghost_python() -> str:
+    """Resolve NanoGhost's own venv Python instead of sys.executable."""
+    repo = _nanoghost_repo_dir()
+    for venv_dir in ("venv", ".venv"):
+        cand = repo / venv_dir / "Scripts" / "python.exe"
+        if cand.is_file():
+            return str(cand)
+    import sys
+    return sys.executable
+
+
 def _nanoghost_instance_dir(name: str) -> Path:
     root = resolve_nanoghost_root(config_path=CONFIG_PATH)
     return root / "instances" / name
+
+
+def _nanoghost_memory_md_path(name: str) -> Path:
+    return _nanoghost_instance_dir(name) / "memory.md"
+
+
+def _nanoghost_agent_db_path(name: str):
+    inst = _nanoghost_instance_dir(name)
+    for cand in (inst / "data" / "agent_data.db", inst / "data" / "agent.db"):
+        if cand.exists():
+            return cand
+    return inst / "data" / "agent.db"
 
 
 def _list_nanoghost_instances(root: Path) -> list[dict]:
@@ -813,7 +836,7 @@ def template_manifest(runtime: str, template_id: str | None = None):
     if runtime == "hermes":
         tabs = ["env", "config", "skills", "channels"]
     elif runtime == "nanoghost":
-        tabs = ["env", "skills", "channels", "config", "mcp"]
+        tabs = ["env", "memories", "skills", "channels", "config", "mcp"]
 
     return {
         "ok": True,
@@ -1052,7 +1075,7 @@ def instance_manifest(runtime: str, name: str):
         tabs = ["env", "config", "soul", "memories", "skills", "channels", "cron", "logs", "sessions"]
     elif runtime == "nanoghost":
         services = [{"key": "gateway", "title": "Gateway"}]
-        tabs = ["env", "skills", "prompts", "mcp", "channels"]
+        tabs = ["env", "skills", "memories", "prompts", "mcp", "channels"]
 
     return {
         "ok": True,
@@ -1271,7 +1294,7 @@ def instance_service_start(runtime: str, name: str, service: str):
                 vv = vv[1:-1].strip()
             env[k] = vv
         argv = [
-            sys.executable,
+            _nanoghost_python(),
             str(run_py),
             "--gateway",
             "-I",
@@ -2005,7 +2028,7 @@ def runtime_process_start(runtime: str, name: str, proc: str):
             env["AGENT_MODE"] = "feishu"
         else:
             env.pop("AGENT_MODE", None)
-        argv = [sys.executable, str(run_py), "-I", str(inst)]
+        argv = [_nanoghost_python(), str(run_py), "-I", str(inst)]
         logger.info("starting nanoghost %s/%s argv=%s", name, proc, " ".join(argv))
         sr = spawn_logged(argv, cwd=str(run_py.parent), env=env, tag=f"ng-{proc}-{name}")
         logger.info("nanoghost %s/%s pid=%s", name, proc, sr.pid)
@@ -2063,3 +2086,128 @@ def runtime_process_status(runtime: str, name: str, proc: str):
             status = _status_for_record(rec)
         return {"ok": True, **status}
     raise HTTPException(status_code=404, detail="runtime not found")
+
+
+@app.get("/api/instances/nanoghost/{name}/memory/raw")
+def ng_memory_raw_get(name: str):
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    md_path = _nanoghost_memory_md_path(name)
+    raw = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+    return {"ok": True, "raw": raw, "path": str(md_path)}
+
+
+class NgMemRawBody(BaseModel):
+    raw: str
+
+
+@app.put("/api/instances/nanoghost/{name}/memory/raw")
+def ng_memory_raw_put(name: str, body: NgMemRawBody):
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    md_path = _nanoghost_memory_md_path(name)
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(body.raw, encoding="utf-8")
+    return {"ok": True}
+
+
+@app.get("/api/instances/nanoghost/{name}/memory/cards")
+def ng_memory_cards_get(name: str):
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    db_path = _nanoghost_agent_db_path(name)
+    if not db_path.exists():
+        return {"ok": True, "cards": []}
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        # Support both old and new schema
+        cols = [r[1] for r in c.execute("PRAGMA table_info(agent_memory_cards)").fetchall()]
+        if "session" in cols:
+            c.execute("""SELECT session as user_input, agent_output,
+                             total_steps, success_count, approve_count, reject_count, trigger_count,
+                             finished_at
+                             FROM agent_memory_cards ORDER BY finished_at DESC""")
+        else:
+            c.execute("""SELECT intent_summary as user_input, steps_json as agent_output,
+                             total_rounds as total_steps, success_count, approved_count as approve_count,
+                             rejected_count as reject_count, trigger_count,
+                             created_at as finished_at
+                             FROM agent_memory_cards ORDER BY created_at DESC""")
+        cards = [dict(r) for r in c.fetchall()]
+        conn.close()
+        import re as _re
+        import json as _json
+        for card in cards:
+            for k in ("user_input", "agent_output"):
+                v = card.get(k) or ""
+                if k == "agent_output" and isinstance(v, str) and v.startswith("["):
+                    try:
+                        steps = _json.loads(v)
+                        v = "\n".join(s.get("path", s.get("method", ""))[:80] for s in steps[:5])
+                        if len(steps) > 5:
+                            v += "\n..."
+                    except:
+                        pass
+                v = _re.sub(r"<[^>]+>", "", v)
+                if len(v) > 120:
+                    v = v[:117] + "..."
+                card[k] = v
+            ts = card.get("finished_at")
+            if ts:
+                import datetime
+                try:
+                    card["finished_at"] = datetime.datetime.fromtimestamp(int(ts)).strftime("%Y/%m/%d %H:%M:%S")
+                except:
+                    pass
+        return {"ok": True, "cards": cards}
+    except Exception as e:
+        return {"ok": True, "cards": [], "error": str(e)}
+
+
+@app.get("/api/instances/nanoghost/{name}/memory/graph")
+def ng_memory_graph_get(name: str):
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    db_path = _nanoghost_agent_db_path(name)
+    if not db_path.exists():
+        return {"ok": True, "nodes": [], "edges": []}
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("""SELECT from_method, from_path, to_method, to_path,
+                     relation_type, total_count, approved_count
+                     FROM agent_memory_edges ORDER BY total_count DESC""")
+        edge_rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+        import hashlib
+        def _safe_id(s):
+            return "n" + hashlib.md5((s or "").encode()).hexdigest()[:12]
+        nodes_map = {}
+        edges = []
+        for r in edge_rows:
+            from_id = _safe_id(r["from_path"])
+            if from_id not in nodes_map:
+                nodes_map[from_id] = {"id": from_id, "method": r["from_method"], "path": r["from_path"],
+                    "label": (r["from_method"] or "?") + "\n" + ((r["from_path"] or "")[:80])}
+            to_id = _safe_id(r["to_path"])
+            if to_id not in nodes_map:
+                nodes_map[to_id] = {"id": to_id, "method": r["to_method"], "path": r["to_path"],
+                    "label": (r["to_method"] or "?") + "\n" + ((r["to_path"] or "")[:80])}
+            edges.append({
+                "from": from_id, "to": to_id,
+                "label": r["relation_type"] or "FOLLOWS",
+                "total_count": r["total_count"] or 1,
+                "approved_count": r["approved_count"] or 0,
+            })
+        return {"ok": True, "nodes": list(nodes_map.values()), "edges": edges}
+    except Exception as e:
+        return {"ok": True, "nodes": [], "edges": [], "error": str(e)}
