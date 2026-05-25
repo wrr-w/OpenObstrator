@@ -5,3 +5,12 @@ pyyaml==6.0.2
 psutil==6.0.0
 pytest==8.3.2
 httpx==0.27.2
+
+# ========================
+# 前端静态依赖
+# ========================
+# G6 v5 (图谱引擎): 从 npm 下载 antv/g6 v5 的 UMD 包
+#   npm install @antv/g6@5
+#   复制 node_modules/@antv/g6/dist/g6.min.js → server/static/g6.min.js
+# 或直接下载:
+#   https://unpkg.com/@antv/g6@5/dist/g6.min.js
