@@ -1,0 +1,15 @@
+{
+  "name": "openobstrator",
+  "private": true,
+  "description": "OpenObstrator - Hermes/NanoGhost web management console",
+  "dependencies": {
+    "@antv/g6": "^5.1.1"
+  },
+  "scripts": {
+    "postinstall": "cpy node_modules/@antv/g6/dist/g6.min.js server/static/g6.min.js --flat",
+    "copy-g6": "cpy node_modules/@antv/g6/dist/g6.min.js server/static/g6.min.js --flat"
+  },
+  "devDependencies": {
+    "cpy-cli": "^5.0.0"
+  }
+}
