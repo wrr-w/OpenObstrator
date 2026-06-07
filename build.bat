@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 >nul
+setlocal enabledelayedexpansion
 echo ========================================
 echo OpenObstrator - Build Package
 echo ========================================
@@ -13,18 +14,13 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-echo [1/3] Installing build dependencies...
-call .venv\Scripts\activate.bat
-pip install -r requirements.txt
-pip install pyinstaller
-
-echo.
-echo [2/3] Cleaning previous build...
+echo [1/2] Cleaning previous build...
 if exist "dist" rmdir /S /Q "dist"
 if exist "build" rmdir /S /Q "build"
 
 echo.
-echo [3/3] Building executable with PyInstaller...
+echo [2/2] Building executable with PyInstaller...
+call .venv\Scripts\activate.bat
 pyinstaller --clean -y build.spec
 
 if errorlevel 1 (

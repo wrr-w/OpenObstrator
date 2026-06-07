@@ -52,17 +52,32 @@ from server.template_copy import clone_template_dir
 if getattr(sys, 'frozen', False):
     BASE_DIR = Path(sys.executable).parent
     APP_ROOT = BASE_DIR
-    DATA_DIR = BASE_DIR / "data"
     _MEIPASS = Path(sys._MEIPASS)
     TEMPLATES_DIR = _MEIPASS / "server" / "templates"
     STATIC_DIR = _MEIPASS / "server" / "static"
+    _EMBEDDED_DATA_DIR = _MEIPASS / "data"
+    DATA_DIR = BASE_DIR / "data"
 else:
     APP_ROOT = Path(__file__).resolve().parents[1]
     DATA_DIR = APP_ROOT / "data"
+    _EMBEDDED_DATA_DIR = DATA_DIR
     TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
     STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+if getattr(sys, 'frozen', False) and _EMBEDDED_DATA_DIR.is_dir():
+    import shutil as _shutil
+    for _item in _EMBEDDED_DATA_DIR.rglob("*"):
+        _rel = _item.relative_to(_EMBEDDED_DATA_DIR)
+        _dest = DATA_DIR / _rel
+        if _item.is_file():
+            if not _dest.exists():
+                _dest.parent.mkdir(parents=True, exist_ok=True)
+                _shutil.copy2(_item, _dest)
+        elif _item.is_dir():
+            _dest.mkdir(parents=True, exist_ok=True)
+
 CONFIG_PATH = DATA_DIR / "config.yaml"
 REGISTRY_PATH = DATA_DIR / "registry.json"
 
