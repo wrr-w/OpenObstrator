@@ -18,3 +18,17 @@ data/nanoghost/instances/*/
 
 # frontend dependencies
 node_modules/
+
+# build artifacts
+build/
+dist/
+server/static/g6.min.js
+
+# runtime files
+server.pid
+*.log
+server_start.log
+server_start_err.log
+server_stdout.log
+server_stderr.log
+ngrok_openobstrator.log
