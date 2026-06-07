@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -23,6 +23,8 @@ from server.hermes_mcp import probe_mcp_servers
 from server.hermes_mcp import read_hermes_config_raw
 from server.hermes_mcp import write_hermes_config_raw
 from server.nanoghost_mcp import list_tools_http_sse
+from server.nanoghost_mcp import _list_tools_stdio
+from server.nanoghost_mcp import _probe_stdio_mcp
 from server.nanoghost_mcp import nanoghost_mcp_config_get as nanoghost_mcp_config_summary
 from server.nanoghost_mcp import nanoghost_global_config_path
 from server.nanoghost_mcp import parse_global_mcp_servers
@@ -47,13 +49,22 @@ from server.settings import resolve_openclaw_root
 from server.settings import resolve_shared_skills_root
 from server.template_copy import clone_template_dir
 
-APP_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = APP_ROOT / "data"
+if getattr(sys, 'frozen', False):
+    BASE_DIR = Path(sys.executable).parent
+    APP_ROOT = BASE_DIR
+    DATA_DIR = BASE_DIR / "data"
+    _MEIPASS = Path(sys._MEIPASS)
+    TEMPLATES_DIR = _MEIPASS / "server" / "templates"
+    STATIC_DIR = _MEIPASS / "server" / "static"
+else:
+    APP_ROOT = Path(__file__).resolve().parents[1]
+    DATA_DIR = APP_ROOT / "data"
+    TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+    STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_PATH = DATA_DIR / "config.yaml"
 REGISTRY_PATH = DATA_DIR / "registry.json"
-
-TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
-STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 SERVICE_HOST = "127.0.0.1"
 
@@ -168,6 +179,11 @@ def page_templates(request: Request):
 @app.get("/pages/logs", response_class=HTMLResponse)
 def page_logs(request: Request):
     return templates.TemplateResponse("pages/logs.html", {"request": request})
+
+
+@app.get("/pages/memory-graph", response_class=HTMLResponse)
+def page_memory_graph(request: Request, name: str, level: int = 2):
+    return templates.TemplateResponse("pages/memory_graph.html", {"request": request})
 
 
 @app.get("/pages/global-registry", response_class=HTMLResponse)
@@ -1075,7 +1091,7 @@ def instance_manifest(runtime: str, name: str):
         tabs = ["env", "config", "soul", "memories", "skills", "channels", "cron", "logs", "sessions"]
     elif runtime == "nanoghost":
         services = [{"key": "gateway", "title": "Gateway"}]
-        tabs = ["env", "skills", "memories", "prompts", "mcp", "channels"]
+        tabs = ["env", "skills", "memories", "prompts", "mcp", "channels", "tools"]
 
     return {
         "ok": True,
@@ -1243,15 +1259,38 @@ def instance_service_status(runtime: str, name: str, service: str):
     if runtime == "nanoghost":
         if service != "gateway":
             raise HTTPException(status_code=404, detail="service not found")
+        inst = _nanoghost_instance_dir(name)
+        inst_name = inst.name if inst and inst.exists() else name
+        import subprocess
+        try:
+            r = subprocess.run(f"nanoghost gateway status -I {inst}", shell=True, capture_output=True, text=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            return {"ok": True, "pid": None, "port": None, "running": False}
+        out = (r.stdout or "").strip()
+        err = (r.stderr or "").strip()
+        import json as _json
+        try:
+            parsed = _json.loads(out)
+            running = bool(parsed.get("running", False))
+            pid = parsed.get("pid") or None
+            if pid is not None:
+                pid = int(pid)
+        except Exception:
+            running = bool(out or err)
+            pid = None
         reg = load_registry(REGISTRY_PATH)
         rec = _proc_record(reg, "nanoghost", name, "gateway")
-        status = _status_for_record(rec)
-        if status["pid"] and not status["pid_running"]:
-            rec["pid"] = None
+        port = parsed.get("port") if isinstance(parsed, dict) else None
+        if port is not None:
+            port = int(port)
+        rec["pid"] = pid
+        rec["port"] = port
+        if pid:
+            rec["started_at"] = rec.get("started_at") or int(time.time())
+        else:
             rec["started_at"] = None
-            save_registry(REGISTRY_PATH, reg)
-            status = _status_for_record(rec)
-        return {"ok": True, **status}
+        save_registry(REGISTRY_PATH, reg)
+        return {"ok": True, "pid": pid, "port": port, "running": bool(running)}
     raise HTTPException(status_code=404, detail="service not found")
 
 
@@ -1267,50 +1306,39 @@ def instance_service_start(runtime: str, name: str, service: str):
         inst = _nanoghost_instance_dir(name)
         if not inst.exists():
             raise HTTPException(status_code=404, detail="instance not found")
-        cfg = load_app_config(CONFIG_PATH)
         reg = load_registry(REGISTRY_PATH)
         rec = _proc_record(reg, "nanoghost", name, "gateway")
         if rec.get("pid") and is_pid_running(int(rec["pid"])):
             logger.info("nanoghost gateway %s/%s already running (pid %s)", name, "gateway", rec["pid"])
             return {"ok": True, **_status_for_record(rec)}
-        used = _collect_used_ports(reg)
-        if not rec.get("port"):
-            rec["port"] = allocate_port(
-                SERVICE_HOST,
-                cfg.port_alloc.gateway_start,
-                cfg.port_alloc.gateway_end,
-                used=used,
-            )
-        run_py = _nanoghost_run_py()
-        env = dict(os.environ)
-        env["INSTANCE_DIR"] = str(inst)
-        env_path = inst / ".env"
-        keys = parse_env_keys(env_path)
-        for k, v in keys.items():
-            vv = (v or "").strip()
-            if not vv:
-                continue
-            if len(vv) >= 2 and vv[0] == vv[-1] and vv[0] in ('"', "'", "`"):
-                vv = vv[1:-1].strip()
-            env[k] = vv
-        argv = [
-            _nanoghost_python(),
-            str(run_py),
-            "--gateway",
-            "-I",
-            str(inst),
-            "--host",
-            SERVICE_HOST,
-            "--port",
-            str(int(rec["port"])),
-        ]
-        logger.info("starting nanoghost gateway %s/%s port=%s argv=%s", name, "gateway", rec["port"], " ".join(argv))
-        sr = spawn_logged(argv, cwd=str(run_py.parent), env=env, tag=f"ng-gateway-{name}")
-        logger.info("nanoghost gateway %s/%s pid=%s", name, "gateway", sr.pid)
-        rec["pid"] = sr.pid
-        rec["started_at"] = int(time.time())
-        save_registry(REGISTRY_PATH, reg)
-        return {"ok": True, **_status_for_record(rec), "argv": argv}
+        import subprocess
+        import re as _pid_re
+        _env = dict(os.environ)
+        _env["NANOGHOST_CALLER"] = "openobstrator"
+        r = subprocess.run(f"nanoghost gateway start -I {inst}", shell=True, timeout=30, env=_env)
+        if r.returncode != 0:
+            raise HTTPException(status_code=500, detail="gateway start failed")
+        r2 = subprocess.run(f"nanoghost gateway status -I {inst}", shell=True, capture_output=True, text=True, timeout=10)
+        status_out = (r2.stdout or "").strip()
+        pid = None
+        port = None
+        try:
+            import json as _status_json
+            parsed = _status_json.loads(status_out)
+            pid = parsed.get("pid") or None
+            port = parsed.get("port") or None
+            if pid is not None:
+                pid = int(pid)
+            if port is not None:
+                port = int(port)
+        except Exception:
+            pass
+        if pid:
+            rec["pid"] = pid
+            rec["port"] = port
+            rec["started_at"] = int(time.time())
+            save_registry(REGISTRY_PATH, reg)
+        return {"ok": True, "pid": pid, "port": port}
     raise HTTPException(status_code=404, detail="service not found")
 
 
@@ -1323,15 +1351,24 @@ def instance_service_stop(runtime: str, name: str, service: str):
     if runtime == "nanoghost":
         if service != "gateway":
             raise HTTPException(status_code=404, detail="service not found")
+        inst = _nanoghost_instance_dir(name)
+        if not inst.exists():
+            raise HTTPException(status_code=404, detail="instance not found")
+        inst_name = inst.name
+        import subprocess
+        r = subprocess.run(f"nanoghost gateway stop -I {inst}", shell=True, capture_output=True, text=True, timeout=30)
+        out = (r.stdout or "").strip()
+        err = (r.stderr or "").strip()
+        logger.info("nanoghost gateway stop result: out=%s err=%s", out[:200], err[:200])
+        # Clear registry regardless
         reg = load_registry(REGISTRY_PATH)
         rec = _proc_record(reg, "nanoghost", name, "gateway")
-        pid = rec.get("pid")
-        if not pid:
-            return {"ok": False, "error": "no pid recorded"}
-        kill_pid_tree(int(pid))
         rec["pid"] = None
         rec["started_at"] = None
         save_registry(REGISTRY_PATH, reg)
+        if r.returncode != 0 and "not running" not in (out + err).lower():
+            # Non-fatal: log but don't error if already stopped
+            logger.warning("nanoghost gateway stop had non-zero exit: %s", err)
         return {"ok": True}
     raise HTTPException(status_code=404, detail="service not found")
 
@@ -1562,7 +1599,22 @@ def nanoghost_mcp_allowlist_get(name: str):
     if not inst.exists():
         raise HTTPException(status_code=404, detail="instance not found")
     cfg_path = inst / "config.yaml"
-    return {"ok": True, "path": str(cfg_path), "enabled_only": read_instance_enabled_only(instance_dir=inst)}
+    enabled_only = read_instance_enabled_only(instance_dir=inst)
+    # 读取 action 级白名单
+    action_allowlist = {}
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            import yaml
+            cfg = yaml.safe_load(f) or {}
+        mcp_cfg = cfg.get("mcp") or {}
+        action_allowlist = mcp_cfg.get("action_allowlist") or {}
+    except Exception:
+        pass
+    return {
+        "ok": True, "path": str(cfg_path),
+        "enabled_only": enabled_only,
+        "action_allowlist": action_allowlist,
+    }
 
 
 @app.put("/api/nanoghost/mcp/instances/{name}/allowlist")
@@ -1572,6 +1624,34 @@ def nanoghost_mcp_allowlist_put(name: str, body: NanoGhostMcpAllowlistPutBody):
     if not inst.exists():
         raise HTTPException(status_code=404, detail="instance not found")
     write_instance_enabled_only(instance_dir=inst, enabled_only=body.enabled_only or [])
+    return {"ok": True}
+
+
+class McpActionAllowlistPutBody(BaseModel):
+    action_allowlist: dict[str, list[str]]
+
+
+@app.put("/api/nanoghost/mcp/instances/{name}/action-allowlist")
+def nanoghost_mcp_action_allowlist_put(name: str, body: McpActionAllowlistPutBody):
+    """保存 action 级白名单：{server_id: [action1, action2, ...]}"""
+    name = (name or "").strip()
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    cfg_path = inst / "config.yaml"
+    import yaml
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    if "mcp" not in cfg or not isinstance(cfg["mcp"], dict):
+        cfg["mcp"] = {}
+    cfg["mcp"]["action_allowlist"] = body.action_allowlist or {}
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
     return {"ok": True}
 
 
@@ -1607,17 +1687,25 @@ def nanoghost_mcp_probe(instance: str | None = None):
         if not enabled:
             items.append({"id": sid, "enabled": enabled, "transport": transport, "url": url, "ok": False, "status": "disabled", "error": "disabled", "duration_ms": 0})
             continue
-        if transport != "http_sse":
+        if transport == "http_sse":
+            if not url or not url.strip():
+                items.append({"id": sid, "enabled": enabled, "transport": transport, "url": None, "ok": False, "status": "invalid", "error": "missing url", "duration_ms": 0})
+                continue
+            headers = scfg.get("headers") if isinstance(scfg.get("headers"), dict) else {}
+            headers2 = {str(k): str(v) for k, v in headers.items() if v is not None}
+            ok, status, err, dur = probe_http_sse(url=url, headers=headers2, timeout_seconds=timeout_seconds)
+            items.append({"id": sid, "enabled": enabled, "transport": transport, "url": url, "ok": ok, "status": status, "error": err, "duration_ms": int(dur or 0)})
+        elif transport == "stdio":
+            cmd = scfg.get("command") if isinstance(scfg.get("command"), str) else ""
+            cmd_args = scfg.get("args") if isinstance(scfg.get("args"), list) else []
+            if not cmd:
+                items.append({"id": sid, "enabled": enabled, "transport": transport, "url": None, "ok": False, "status": "invalid", "error": "missing command", "duration_ms": 0})
+                continue
+            ok, status, err, dur = _probe_stdio_mcp(command=cmd, args=cmd_args, timeout_seconds=timeout_seconds)
+            items.append({"id": sid, "enabled": enabled, "transport": transport, "url": url, "ok": ok, "status": status, "error": err, "duration_ms": int(dur or 0)})
+        else:
             items.append({"id": sid, "enabled": enabled, "transport": transport, "url": url, "ok": False, "status": "unsupported", "error": "unsupported transport", "duration_ms": 0})
             continue
-        if not url or not url.strip():
-            items.append({"id": sid, "enabled": enabled, "transport": transport, "url": None, "ok": False, "status": "invalid", "error": "missing url", "duration_ms": 0})
-            continue
-
-        headers = scfg.get("headers") if isinstance(scfg.get("headers"), dict) else {}
-        headers2 = {str(k): str(v) for k, v in headers.items() if v is not None}
-        ok, status, err, dur = probe_http_sse(url=url, headers=headers2, timeout_seconds=timeout_seconds)
-        items.append({"id": sid, "enabled": enabled, "transport": transport, "url": url, "ok": ok, "status": status, "error": err, "duration_ms": int(dur or 0)})
 
     return {"ok": True, "instance": str(inst_dir) if inst_dir else None, "items": items}
 
@@ -1648,17 +1736,24 @@ def nanoghost_mcp_tools_get(name: str, server_id: str):
     if scfg.get("enabled", True) is False:
         raise HTTPException(status_code=400, detail="server disabled")
     transport = str(scfg.get("transport") or "http_sse").strip() or "http_sse"
-    if transport != "http_sse":
+    if transport == "http_sse":
+        url = scfg.get("url") if isinstance(scfg.get("url"), str) else ""
+        url = url.strip()
+        if not url:
+            raise HTTPException(status_code=400, detail="missing url")
+        headers = scfg.get("headers") if isinstance(scfg.get("headers"), dict) else {}
+        headers2 = {str(k): str(v) for k, v in headers.items() if v is not None}
+        timeout_seconds = float(scfg.get("timeout_seconds") or 30)
+        ok, result, err, dur = list_tools_http_sse(url=url, headers=headers2, timeout_seconds=timeout_seconds)
+    elif transport == "stdio":
+        cmd = scfg.get("command") if isinstance(scfg.get("command"), str) else ""
+        cmd_args = scfg.get("args") if isinstance(scfg.get("args"), list) else []
+        if not cmd:
+            raise HTTPException(status_code=400, detail="missing command")
+        timeout_seconds = float(scfg.get("timeout_seconds") or 30)
+        ok, result, err, dur = _list_tools_stdio(command=cmd, args=cmd_args, timeout_seconds=timeout_seconds)
+    else:
         raise HTTPException(status_code=400, detail="unsupported transport")
-    url = scfg.get("url") if isinstance(scfg.get("url"), str) else ""
-    url = url.strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="missing url")
-    headers = scfg.get("headers") if isinstance(scfg.get("headers"), dict) else {}
-    headers2 = {str(k): str(v) for k, v in headers.items() if v is not None}
-    timeout_seconds = float(scfg.get("timeout_seconds") or 30)
-
-    ok, result, err, dur = list_tools_http_sse(url=url, headers=headers2, timeout_seconds=timeout_seconds)
     tools = result.get("tools") if isinstance(result, dict) else None
     return {
         "ok": True,
@@ -2102,6 +2197,11 @@ class NgMemRawBody(BaseModel):
     raw: str
 
 
+class MemoryCardUpdateBody(BaseModel):
+    pitfalls: str = ""
+    experience_notes: str = ""  # v3: only experience_notes is used, pitfalls kept for compatibility
+
+
 @app.put("/api/instances/nanoghost/{name}/memory/raw")
 def ng_memory_raw_put(name: str, body: NgMemRawBody):
     inst = _nanoghost_instance_dir(name)
@@ -2128,35 +2228,49 @@ def ng_memory_cards_get(name: str):
         c = conn.cursor()
         # Support both old and new schema
         cols = [r[1] for r in c.execute("PRAGMA table_info(agent_memory_cards)").fetchall()]
-        if "session" in cols:
-            c.execute("""SELECT session as user_input, agent_output,
+        if "l1_code" in cols:
+            # v3 schema: flow_hash, intent_summary, steps (json), success_count, total_rounds, experience_notes, l1_code
+            c.execute("""SELECT id, flow_hash, intent_summary as user_input,
+                             steps_json as steps_raw, success_count, total_rounds,
+                             experience_notes, l1_code, namespace,
+                             created_at as finished_at
+                             FROM agent_memory_cards ORDER BY created_at DESC""")
+        elif "session" in cols:
+            c.execute("""SELECT id, session as user_input, agent_output,
                              total_steps, success_count, approve_count, reject_count, trigger_count,
-                             finished_at
+                             finished_at, pitfalls, experience_notes
                              FROM agent_memory_cards ORDER BY finished_at DESC""")
         else:
-            c.execute("""SELECT intent_summary as user_input, steps_json as agent_output,
+            c.execute("""SELECT id, intent_summary as user_input, steps_json as agent_output,
                              total_rounds as total_steps, success_count, approved_count as approve_count,
                              rejected_count as reject_count, trigger_count,
-                             created_at as finished_at
+                             created_at as finished_at, pitfalls, experience_notes
                              FROM agent_memory_cards ORDER BY created_at DESC""")
         cards = [dict(r) for r in c.fetchall()]
         conn.close()
         import re as _re
         import json as _json
         for card in cards:
+            # Save raw steps_json for modal display
+            raw_steps = card.get("steps_raw") or card.get("agent_output") or ""
+            if raw_steps and raw_steps.startswith("["):
+                card["steps_json_raw"] = raw_steps
+            else:
+                card["steps_json_raw"] = "[]"
+
             for k in ("user_input", "agent_output"):
                 v = card.get(k) or ""
                 if k == "agent_output" and isinstance(v, str) and v.startswith("["):
                     try:
                         steps = _json.loads(v)
-                        v = "\n".join(s.get("path", s.get("method", ""))[:80] for s in steps[:5])
-                        if len(steps) > 5:
-                            v += "\n..."
+                        v = "\n".join(s.get("path", s.get("method", ""))[:80] for s in steps[:3])
+                        if len(steps) > 3:
+                            v += "\n...(" + str(len(steps)) + " steps)"
                     except:
                         pass
                 v = _re.sub(r"<[^>]+>", "", v)
-                if len(v) > 120:
-                    v = v[:117] + "..."
+                if len(v) > 100:
+                    v = v[:97] + "..."
                 card[k] = v
             ts = card.get("finished_at")
             if ts:
@@ -2170,44 +2284,278 @@ def ng_memory_cards_get(name: str):
         return {"ok": True, "cards": [], "error": str(e)}
 
 
+@app.put("/api/instances/nanoghost/{name}/memory/cards/{card_id}")
+def ng_memory_card_update(name: str, card_id: str, body: MemoryCardUpdateBody):
+    """更新卡片的 pitfalls 和 experience_notes"""
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    db_path = _nanoghost_agent_db_path(name)
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="db not found")
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(db_path))
+        c = conn.cursor()
+
+        # Verify card exists
+        row = c.execute("SELECT id FROM agent_memory_cards WHERE id = ?", (card_id,)).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="card not found")
+
+        import json
+        # Parse incoming pitfalls/experience_notes as JSON arrays
+        pitfalls_str = body.pitfalls.strip()
+        exp_str = body.experience_notes.strip()
+
+        # Validate JSON
+        if pitfalls_str:
+            try:
+                json.loads(pitfalls_str)
+            except json.JSONDecodeError:
+                # Try to wrap as single-item array
+                pitfalls_str = json.dumps([pitfalls_str])
+
+        if exp_str:
+            try:
+                json.loads(exp_str)
+            except json.JSONDecodeError:
+                exp_str = json.dumps([exp_str])
+
+        import time
+        now = time.time()
+        c.execute(
+            "UPDATE agent_memory_cards SET pitfalls = ?, experience_notes = ?, updated_at = ? WHERE id = ?",
+            (pitfalls_str, exp_str, now, card_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "id": card_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/instances/nanoghost/{name}/memory/cards/{card_id}")
+def ng_memory_card_delete(name: str, card_id: str):
+    """删除指定的记忆卡片"""
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    db_path = _nanoghost_agent_db_path(name)
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="db not found")
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(db_path))
+        c = conn.cursor()
+        c.execute("DELETE FROM agent_memory_cards WHERE id = ?", (card_id,))
+        if c.rowcount == 0:
+            conn.close()
+            raise HTTPException(status_code=404, detail="card not found")
+        conn.commit()
+        conn.close()
+        return {"ok": True, "id": card_id, "deleted": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/instances/nanoghost/{name}/memory/graph")
-def ng_memory_graph_get(name: str):
+def ng_memory_graph_get(name: str, level: int = Query(2, ge=1, le=4)):
+    """Multi-layer graph: level=1 (cmd-type), 2 (cmd+target), 3 (normalized path), 4 (full detail)."""
     inst = _nanoghost_instance_dir(name)
     if not inst.exists():
         raise HTTPException(status_code=404, detail="instance not found")
     db_path = _nanoghost_agent_db_path(name)
     if not db_path.exists():
         return {"ok": True, "nodes": [], "edges": []}
-    import sqlite3
+    import sqlite3, re
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        c.execute("""SELECT from_method, from_path, to_method, to_path,
-                     relation_type, total_count, approved_count
-                     FROM agent_memory_edges ORDER BY total_count DESC""")
-        edge_rows = [dict(r) for r in c.fetchall()]
+        has_edges = bool(c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_memory_edges'"
+        ).fetchone())
+        if has_edges:
+            c.execute("""SELECT from_method, from_path, to_method, to_path,
+                         total_count FROM agent_memory_edges""")
+            rows = [dict(r) for r in c.fetchall()]
+        else:
+            rows = []
         conn.close()
+        if not rows:
+            return {"ok": True, "nodes": [], "edges": []}
+
+        def _first_cmd(path):
+            p = (path or "").strip()
+            for skip in ["2>nul ", ">nul ", "&& ", "|| "]:
+                if p.startswith(skip): p = p[len(skip):]
+            p = p.split(" 2>&1")[0].split(" |")[0].split(" 2>")[0].strip()
+            return p.split()[0] if p.split() else p
+
+        def _level_key(method, path, lv):
+            p = (path or "").strip()
+            if method == "EXEC":
+                cmd = _first_cmd(p)
+                if lv == 1:
+                    return "EXEC:" + cmd
+                norm = re.sub(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", "{id}", p)
+                norm = re.sub(r"^[A-Za-z]:\\", "/", norm).replace("\\", "/")
+                disp = norm
+                if disp.lower().startswith(cmd.lower()):
+                    disp = disp[len(cmd):].strip().strip(" |\"")
+                return "EXEC/" + cmd + "/" + (disp[:80] if lv == 2 else disp.split("?")[0][:160] if lv == 3 else disp)
+            else:
+                if lv == 1:
+                    return method
+                norm = re.sub(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", "{id}", p)
+                norm = re.sub(r"^[A-Za-z]:\\", "/", norm).replace("\\", "/")
+                if lv == 2:
+                    segs = [s for s in norm.split("?")[0].split("/") if s]
+                    return method + "/" + (segs[0] if segs else "/")
+                return method + "/" + (norm.split("?")[0] if lv == 3 else norm)
+
+        edge_map = {}
+        for r in rows:
+            fk = _level_key(r["from_method"], r["from_path"], level)
+            tk = _level_key(r["to_method"], r["to_path"], level)
+            if fk == tk and level > 1:
+                continue
+            key = (fk, tk)
+            edge_map[key] = edge_map.get(key, 0) + (r["total_count"] or 1)
+
+        if not edge_map:
+            return {"ok": True, "nodes": [], "edges": []}
+
         import hashlib
-        def _safe_id(s):
-            return "n" + hashlib.md5((s or "").encode()).hexdigest()[:12]
-        nodes_map = {}
-        edges = []
-        for r in edge_rows:
-            from_id = _safe_id(r["from_path"])
-            if from_id not in nodes_map:
-                nodes_map[from_id] = {"id": from_id, "method": r["from_method"], "path": r["from_path"],
-                    "label": (r["from_method"] or "?") + "\n" + ((r["from_path"] or "")[:80])}
-            to_id = _safe_id(r["to_path"])
-            if to_id not in nodes_map:
-                nodes_map[to_id] = {"id": to_id, "method": r["to_method"], "path": r["to_path"],
-                    "label": (r["to_method"] or "?") + "\n" + ((r["to_path"] or "")[:80])}
-            edges.append({
-                "from": from_id, "to": to_id,
-                "label": r["relation_type"] or "FOLLOWS",
-                "total_count": r["total_count"] or 1,
-                "approved_count": r["approved_count"] or 0,
-            })
-        return {"ok": True, "nodes": list(nodes_map.values()), "edges": edges}
+        def _sid(s):
+            return "n" + hashlib.md5(s.encode()).hexdigest()[:12]
+
+        def _label(key):
+            if level == 1:
+                return key[:40]
+            parts = key.split("/", 1)
+            m = parts[0]
+            rest = parts[1] if len(parts) > 1 else ""
+            if level == 2:
+                return m + "\n" + rest[:40]
+            return m + "\n" + rest[:80]
+
+        nodes, edges = {}, []
+        for (fk, tk), cnt in sorted(edge_map.items(), key=lambda x: -x[1]):
+            fid, tid = _sid(fk), _sid(tk)
+            if fid not in nodes:
+                nodes[fid] = {"id": fid, "label": _label(fk)}
+            if tid not in nodes:
+                nodes[tid] = {"id": tid, "label": _label(tk)}
+            edges.append({"from": fid, "to": tid, "label": "x" + str(cnt), "total_count": cnt})
+
+        return {"ok": True, "nodes": list(nodes.values()), "edges": edges, "level": level}
     except Exception as e:
         return {"ok": True, "nodes": [], "edges": [], "error": str(e)}
+
+@app.get("/api/instances/{runtime}/{name}/tools")
+def instance_tools_get(runtime: str, name: str):
+    """返回实例最终注册的工具列表（builtin + MCP 折叠 + skills）。"""
+    name = (name or "").strip()
+    runtime = (runtime or "").strip()
+
+    # Built-in tools (固定，与 builtins.py register_builtins 一致)
+    builtins = [
+        {"name": "terminal", "description": "在本地终端执行 shell 命令", "category": "system"},
+        {"name": "read", "description": "读取本地文件内容", "category": "system"},
+        {"name": "ask_user", "description": "向用户提问并等待回答", "category": "system"},
+        {"name": "use_skill", "description": "加载一个可用技能（SKILL.md）的完整指示", "category": "skill"},
+        {"name": "skills_list", "description": "列出所有可用的技能名称和描述", "category": "skill"},
+        {"name": "skill_manage", "description": "管理技能：创建、修改、删除技能", "category": "skill"},
+        {"name": "skill_install", "description": "从生态安装一个技能包", "category": "skill"},
+        {"name": "memory_write", "description": "Write/update/delete entries in memory.md", "category": "system"},
+        {"name": "delegate_task", "description": "将任务委派给子代理在隔离上下文中执行", "category": "subagent"},
+    ]
+
+    mcp_servers = []
+    skills = []
+
+    if runtime == "nanoghost":
+        inst = _nanoghost_instance_dir(name)
+        if inst.exists():
+            # 读取 MCP 白名单
+            enabled_only = read_instance_enabled_only(instance_dir=inst)
+            if enabled_only:
+                raw = read_nanoghost_global_config_raw()
+                try:
+                    all_servers = parse_global_mcp_servers(raw)
+                except ValueError:
+                    all_servers = {}
+
+                for sid in enabled_only:
+                    scfg = all_servers.get(sid)
+                    if not scfg:
+                        continue
+                    if scfg.get("enabled", True) is False:
+                        continue
+                    # 探测该 MCP 服务器的工具列表
+                    transport = str(scfg.get("transport") or "http_sse").strip() or "http_sse"
+                    tools = []
+                    err = None
+                    try:
+                        if transport == "http_sse":
+                            url = str(scfg.get("url") or "").strip()
+                            if url:
+                                headers = {str(k): str(v) for k, v in (scfg.get("headers") or {}).items() if v}
+                                timeout = float(scfg.get("timeout_seconds") or 30)
+                                ok, result, e, dur = list_tools_http_sse(url=url, headers=headers, timeout_seconds=timeout)
+                                if ok and isinstance(result, dict):
+                                    tools = result.get("tools") or []
+                                else:
+                                    err = e
+                        elif transport == "stdio":
+                            cmd = str(scfg.get("command") or "").strip()
+                            if cmd:
+                                args = scfg.get("args") or []
+                                timeout = float(scfg.get("timeout_seconds") or 30)
+                                ok, result, e, dur = _list_tools_stdio(command=cmd, args=args, timeout_seconds=timeout)
+                                if ok and isinstance(result, dict):
+                                    tools = result.get("tools") or []
+                                else:
+                                    err = e
+                    except Exception as ex:
+                        err = str(ex)
+
+                    action_names = [t.get("name", "?") for t in (tools or [])]
+                    mcp_servers.append({
+                        "server_id": sid,
+                        "tool_name": f"mcp_{sid}",
+                        "description": f"调用 {sid} 服务器的 {len(action_names)} 个 MCP 工具",
+                        "transport": transport,
+                        "actions": action_names,
+                        "tools_count": len(action_names),
+                        "error": err,
+                    })
+
+            # 读取技能
+            inst_cfg_path = inst / "config.yaml"
+            try:
+                with open(inst_cfg_path, encoding="utf-8") as f:
+                    import yaml
+                    inst_cfg = yaml.safe_load(f) or {}
+                sk = inst_cfg.get("skills") or {}
+                enabled_skills = sk.get("enabled_only") or []
+                skills = [{"name": s} for s in enabled_skills]
+            except Exception:
+                pass
+
+    return {
+        "ok": True,
+        "runtime": runtime,
+        "name": name,
+        "builtins": builtins,
+        "mcp_servers": mcp_servers,
+        "skills": skills,
+    }
+

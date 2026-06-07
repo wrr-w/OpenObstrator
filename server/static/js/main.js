@@ -32,6 +32,28 @@ async function refreshServices() {
   }
 }
 
+function startGwAutoRefresh() {
+  stopGwAutoRefresh()
+  _gwStatusTimer = setInterval(async () => {
+    const rt = _activeRuntime
+    const name = _activeName
+    if (!rt || !name) return
+    try {
+      const gs = await svcStatus(rt, name, "gateway")
+      setPill(document.getElementById("gwPill"), gs.running, gs.port ? `:${gs.port}` : "")
+      const gh = document.getElementById("gwHint")
+      if (gh) {
+        const url = gs.port ? `http://127.0.0.1:${gs.port}/api/health` : ""
+        gh.textContent = gs.pid ? `pid: ${gs.pid}${url ? `\n${url}` : ""}` : url
+      }
+    } catch (_) {}
+  }, 10000)
+}
+
+function stopGwAutoRefresh() {
+  if (_gwStatusTimer) { clearInterval(_gwStatusTimer); _gwStatusTimer = null }
+}
+
 async function deleteInstanceFlow(runtime, name) {
   if (!runtime || !name) return
   if (!confirm(`确认永久删除实例「${name}」？此操作不可撤销！`)) return
@@ -93,6 +115,7 @@ async function selectInstance(runtime, name) {
   _loadedTabs = new Set()
   _loadedHermesExtras = false
   stopLogAutoRefresh()
+  stopGwAutoRefresh()
   setQuery(runtime, name)
 
   _activeManifest = await loadManifest(runtime, name)
@@ -107,6 +130,7 @@ async function selectInstance(runtime, name) {
   await refreshSidebar(document.getElementById("profileSearch")?.value || "")
   await refreshServices()
   await loadActiveTab()
+  startGwAutoRefresh()
 }
 
 function bindActions() {
@@ -161,7 +185,7 @@ function bindActions() {
       renderInstanceList({ instances: _instances, statuses: _statuses, activeKey: _activeKey, filter: search.value })
     })
 
-  const envSaveBtn = document.getElementById("envSave")
+  const envSaveBtn = document.getElementById("envSaveBatch")
   if (envSaveBtn)
     envSaveBtn.addEventListener("click", async () => {
       const rt = _activeRuntime
@@ -186,6 +210,29 @@ function bindActions() {
       try {
         setToast("")
         await batchPutEnv(rt, name, items)
+        await refreshEnv()
+      } catch (e) {
+        setToast(String(e))
+      }
+    })
+
+  const envSetBtn = document.getElementById("envSet")
+  if (envSetBtn)
+    envSetBtn.addEventListener("click", async () => {
+      const rt = _activeRuntime
+      const name = _activeName
+      if (!rt || !name) return
+      const keyEl = document.getElementById("envNewKey")
+      const valEl = document.getElementById("envNewValue")
+      if (!keyEl || !valEl) return
+      const key = keyEl.value.trim()
+      const val = valEl.value
+      if (!key) { setToast("KEY 不能为空"); return }
+      try {
+        setToast("")
+        await putEnv(rt, name, key, val)
+        keyEl.value = ""
+        valEl.value = ""
         await refreshEnv()
       } catch (e) {
         setToast(String(e))
@@ -323,6 +370,13 @@ function bindActions() {
       await refreshNanoGhostMemories()
     })
 
+  const ngMemEditBtn = document.getElementById("ngMemEdit")
+  if (ngMemEditBtn)
+    ngMemEditBtn.addEventListener("click", () => {
+      if (_activeRuntime !== "nanoghost") return
+      openNgMemoryEditModal(_activeName, refreshNanoGhostMemories)
+    })
+
   const gwStartBtn = document.getElementById("gwStart")
   const gwStopBtn = document.getElementById("gwStop")
   if (gwStartBtn)
@@ -354,9 +408,9 @@ function bindActions() {
       }
     })
 
-  const ngMcpSaveAllowlist = document.getElementById("ngMcpSaveAllowlist")
-  if (ngMcpSaveAllowlist)
-    ngMcpSaveAllowlist.addEventListener("click", async () => {
+  const ngMcpAllowlistSave = document.getElementById("ngMcpAllowlistSave")
+  if (ngMcpAllowlistSave)
+    ngMcpAllowlistSave.addEventListener("click", async () => {
       if (_activeRuntime !== "nanoghost") return
       const inp = document.getElementById("ngMcpAllowlist")
       const raw = inp ? inp.value : ""

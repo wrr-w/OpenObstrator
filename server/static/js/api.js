@@ -193,6 +193,13 @@ async function ngMcpAllowlistPut(name, enabledOnly) {
   })
 }
 
+async function ngMcpActionAllowlistPut(name, actionAllowlist) {
+  return apiJson(`/api/nanoghost/mcp/instances/${encodeURIComponent(name)}/action-allowlist`, {
+    method: "PUT",
+    body: JSON.stringify({ action_allowlist: actionAllowlist }),
+  })
+}
+
 async function ngMcpProbe(name) {
   return apiJson(`/api/nanoghost/mcp/probe?instance=${encodeURIComponent(name)}`, { method: "GET" })
 }
@@ -220,8 +227,27 @@ async function loadNgMemoryCards(name) {
   return apiJson(`/api/instances/nanoghost/${encodeURIComponent(name)}/memory/cards`, { method: "GET" })
 }
 
-async function loadNgMemoryGraph(name) {
-  return apiJson(`/api/instances/nanoghost/${encodeURIComponent(name)}/memory/graph`, { method: "GET" })
+async function updateNgMemoryCard(name, cardId, pitfalls, experienceNotes) {
+  return apiJson(`/api/instances/nanoghost/${encodeURIComponent(name)}/memory/cards/${encodeURIComponent(cardId)}`, {
+    method: "PUT",
+    body: JSON.stringify({ pitfalls, experience_notes: experienceNotes }),
+  })
+}
+
+async function deleteNgMemoryCard(name, cardId) {
+  return apiJson(`/api/instances/nanoghost/${encodeURIComponent(name)}/memory/cards/${encodeURIComponent(cardId)}`, {
+    method: "DELETE",
+  })
+}
+
+async function loadNgMemoryGraph(name, level) {
+  let url = `/api/instances/nanoghost/${encodeURIComponent(name)}/memory/graph`
+  if (level != null) url += `?level=${level}`
+  return apiJson(url, { method: "GET" })
 }
 
 
+
+async function loadTools(runtime, name) {
+  return apiJson(`/api/instances/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}/tools`, { method: "GET" })
+}

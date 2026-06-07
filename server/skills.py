@@ -235,6 +235,45 @@ def list_skills_nanoghost(
     items: list[SkillItem] = []
     seen: set[str] = set()
 
+    # 1. 扫描实例自带的 skills/ 目录
+    local_dir = instance_dir / "skills"
+    if local_dir.is_dir():
+        for skill_md in _iter_skill_index_files(local_dir):
+            skill_dir = skill_md.parent
+            try:
+                content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+            except OSError:
+                continue
+            fm, body = _parse_frontmatter(content)
+            if not _skill_matches_platform(fm):
+                continue
+
+            name = str(fm.get("name") or skill_dir.name).strip()
+            if not name or name in seen:
+                continue
+
+            description = str(fm.get("description") or "").strip()
+            if not description:
+                for line in body.strip().split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        description = line
+                        break
+
+            category = _category_from_skill_md_path(skill_md, local_dir)
+            seen.add(name)
+            items.append(
+                SkillItem(
+                    name=name,
+                    path=skill_md,
+                    enabled=name not in disabled,
+                    description=description,
+                    category=category,
+                    source="local",
+                )
+            )
+
+    # 2. 扫描共享的 ~/.agents/skills/ 目录
     for skill_md in _iter_skill_index_files(shared_dir):
         skill_dir = skill_md.parent
         try:

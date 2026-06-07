@@ -20,8 +20,8 @@ const _NG_LAYOUT_PARAMS = {
 async function _ngBuildGraph() {
   const container = document.getElementById("ngMemGraph")
   if (!container || _ngNodes.length < 2) return
-  if (_ngGraph) _ngGraph.destroy()
-  container.textContent = ""
+  if (_ngGraph) { try { _ngGraph.destroy() } catch (e) {}; _ngGraph = null }
+  if (container) container.textContent = ""
   container.style.cssText = "height:480px;border:1px solid var(--border);border-radius:12px"
 
   const W = container.clientWidth || container.parentElement.clientWidth || 800
@@ -140,10 +140,14 @@ function _ngBuildToolbar() {
   r.onclick = () => _ngGraph?.fitView(50)
   tb.appendChild(r)
 
+  // Remove old slider params container to prevent duplication
+  const oldParams = cardBody.querySelector("._ngParams")
+  if (oldParams) oldParams.remove()
   const params = _NG_LAYOUT_PARAMS[_ngCurLayout] || {}
   const keys = Object.keys(params)
   if (keys.length) {
     const pw = document.createElement("div")
+    pw.className = "_ngParams"
     pw.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;width:100%;margin-top:4px"
     for (const key of keys) {
       const [min, max, def, step] = params[key]
@@ -164,6 +168,17 @@ function _ngBuildToolbar() {
       p.appendChild(inp); p.appendChild(val); pw.appendChild(p)
     }
     cardBody.insertBefore(pw, container)
+  }
+  // Wire level buttons directly (avoids closure issues with block-scoped function declarations)
+  const lvlBtns = document.getElementById("ngLevelBtns")
+  if (lvlBtns && !lvlBtns._ngWired) {
+    lvlBtns._ngWired = true
+    Array.from(lvlBtns.children).forEach(btn => {
+      if (btn.dataset && btn.dataset.level) {
+        const level = parseInt(btn.dataset.level)
+        btn.onclick = () => _ngLoadGraph(level)
+      }
+    })
   }
 }
 
@@ -189,6 +204,34 @@ function _parseNgMemSections(raw) {
   return sections
 }
 
+async function _ngLoadGraph(level) {
+  const rt = _activeRuntime
+  const name = _activeName
+  if (!name || rt !== "nanoghost") return
+  try {
+    const r = await loadNgMemoryGraph(name, level)
+    const container = document.getElementById("ngMemGraph")
+    if (!container) return
+    const nodes = r.nodes || []
+    const edges = r.edges || []
+    const lvlBtns = document.getElementById("ngLevelBtns")
+    if (lvlBtns) {
+      const btns = lvlBtns.querySelectorAll("button")
+      btns.forEach(b => {
+        b.style.background = b.dataset.level == level ? "var(--brand)" : "transparent"
+      })
+    }
+    if (nodes.length === 0) {
+      container.textContent = "暂无流程转移图数据"
+      container.style.cssText = "min-height:60px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;border:1px solid var(--border);border-radius:12px"
+      return
+    }
+    await _renderNgFlowGraph(container, nodes, edges)
+  } catch (e) {
+    setToast(String(e))
+  }
+}
+
 async function refreshNanoGhostMemories() {
   const rt = _activeRuntime
   const name = _activeName
@@ -201,14 +244,34 @@ async function refreshNanoGhostMemories() {
   if (hermesBlock) hermesBlock.style.display = "none"
 
   const pathEl = document.getElementById("ngMemPath")
-  const ta = document.getElementById("ngMemRaw")
+  let _ngMemRaw = ""
 
   try {
     const r = await loadNgMemoryRaw(name)
     if (pathEl && r.path) pathEl.textContent = "path: " + r.path
-    if (ta) ta.value = r.raw || ""
+    _ngMemRaw = r.raw || ""
   } catch (e) {
-    if (ta) ta.value = ""
+    setToast(String(e))
+  }
+
+  // Render memory.md Markdown preview
+  try {
+    const mdPreview = document.getElementById("ngMemMdPreview")
+    if (mdPreview) {
+      const raw = _ngMemRaw
+      if (raw.trim()) {
+        if (typeof marked !== "undefined") {
+          mdPreview.innerHTML = marked.parse(raw)
+        } else {
+          mdPreview.textContent = raw
+        }
+        mdPreview.style.cssText = "font-size:13px;line-height:1.7;padding:8px"
+      } else {
+        mdPreview.textContent = "暂无 memory.md 条目"
+        mdPreview.style.cssText = "font-size:12px;color:var(--muted);text-align:center;padding:12px"
+      }
+    }
+  } catch (e) {
     setToast(String(e))
   }
 
@@ -217,7 +280,7 @@ async function refreshNanoGhostMemories() {
     const mdBody = document.getElementById("ngMemMdBody")
     if (mdBody) {
       mdBody.textContent = ""
-      const sections = _parseNgMemSections(ta ? ta.value : "")
+      const sections = _parseNgMemSections(_ngMemRaw)
       for (const sec of sections) {
         const card = document.createElement("div")
         card.style.cssText = "margin-bottom:8px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px"
@@ -264,16 +327,27 @@ async function refreshNanoGhostMemories() {
       for (const card of cards) {
         const d = document.createElement("div")
         d.style.cssText = "background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px;font-size:11px;line-height:1.5;cursor:pointer"
+        d.title = "点击查看/编辑"
         const userEl = document.createElement("div")
-        userEl.textContent = card.user_input || ""
+        userEl.textContent = (card.user_input || "").slice(0, 60)
         userEl.style.cssText = "color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
         d.appendChild(userEl)
         const meta = document.createElement("div")
-        meta.style.cssText = "display:flex;gap:8px;color:var(--muted);font-size:10px;margin-top:4px"
+        meta.style.cssText = "display:flex;gap:8px;color:var(--muted);font-size:10px;margin-top:4px;flex-wrap:wrap"
         const ts = document.createElement("span")
         ts.textContent = card.finished_at || ""
         meta.appendChild(ts)
-        for (const [label, key] of [["成功", "success_count"], ["轮次", "total_steps"], ["赞成", "approve_count"], ["拒绝", "reject_count"], ["触发", "trigger_count"]]) {
+        if (card.flow_hash) {
+          const fh = document.createElement("span")
+          fh.textContent = "flow: " + (card.flow_hash || "").slice(0, 8)
+          meta.appendChild(fh)
+        }
+        if (card.l1_code != null) {
+          const l1 = document.createElement("span")
+          l1.textContent = "L1: " + card.l1_code
+          meta.appendChild(l1)
+        }
+        for (const [label, key] of [["\u6210\u529f", "success_count"], ["\u8f6e\u6b21", "total_steps"], ["\u8f6e\u6b21", "total_rounds"]]) {
           if (card[key] != null) {
             const sp = document.createElement("span")
             sp.textContent = label + " " + card[key]
@@ -281,33 +355,26 @@ async function refreshNanoGhostMemories() {
           }
         }
         d.appendChild(meta)
-        d.onclick = () => {
-          const txt = "用户: " + (card.user_input || "") + "\n\n助手: " + (card.agent_output || "")
-          alert(txt)
-        }
+        d.addEventListener("click", async () => {
+          const result = await openMemoryCardModal(card, name)
+          if (result === "deleted") {
+            // Refresh the card list
+            await refreshNanoGhostMemories()
+          }
+        })
         cardsBody.appendChild(d)
       }
     }
   } catch (e) {
     setToast(String(e))
   }
+}
 
-  // Render graph
-  try {
-    const r = await loadNgMemoryGraph(name)
-    const container = document.getElementById("ngMemGraph")
-    if (!container) return
-    const nodes = r.nodes || []
-    const edges = r.edges || []
-    if (nodes.length === 0) {
-      container.textContent = "暂无流程转移图数据"
-      container.style.cssText = "min-height:60px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;border:1px solid var(--border);border-radius:12px"
-      return
-    }
-    await _renderNgFlowGraph(container, nodes, edges)
-  } catch (e) {
-    setToast(String(e))
-  }
+function openNgMemGraph() {
+  const name = _activeName
+  const rt = _activeRuntime
+  if (!name || rt !== "nanoghost") return
+  window.open("/pages/memory-graph?name=" + encodeURIComponent(name) + "&level=2", "_blank")
 }
 
 async function refreshEnv() {
@@ -485,6 +552,14 @@ async function refreshPrompts() {
   }
 }
 
+function _updateGroupCheck(header) {
+  const block = header.parentElement
+  const selAll = block.querySelector("input[type=checkbox]:first-child")
+  if (!selAll) return
+  const cbs = Array.from(block.querySelectorAll(".skillCb"))
+  selAll.checked = cbs.length > 0 && cbs.every(cb => cb.checked)
+}
+
 async function refreshSkills() {
   const rt = _activeRuntime
   const name = _activeName
@@ -532,6 +607,7 @@ async function refreshSkills() {
     const tbl = document.createElement("table")
     tbl.style.display = "none"
     const tbdy = document.createElement("tbody")
+    let allEnabled = true
     for (const it of items) {
       const tr = document.createElement("tr")
       tr.dataset.skill = it.name
@@ -547,6 +623,10 @@ async function refreshSkills() {
       cb.className = "skillCb"
       cb.checked = Boolean(it.enabled)
       cb.dataset.skillName = it.name
+      cb.addEventListener("change", () => {
+        _updateGroupCheck(header)
+      })
+      if (!cb.checked) allEnabled = false
       e.appendChild(cb)
       const desc = (it.description || "").trim()
       const path = it.path || ""
@@ -558,6 +638,7 @@ async function refreshSkills() {
       tr.appendChild(ptd)
       tbdy.appendChild(tr)
     }
+    selAll.checked = allEnabled
     tbl.appendChild(tbdy)
     block.appendChild(tbl)
     header.addEventListener("click", (ev) => {
@@ -568,203 +649,221 @@ async function refreshSkills() {
     })
     body.appendChild(block)
   }
+
+  // 保存按钮
+  const saveRow = document.createElement("div")
+  saveRow.style.cssText = "margin-top:16px;display:flex;gap:10px;align-items:center"
+  const saveBtn = document.createElement("button")
+  saveBtn.className = "primary"
+  saveBtn.textContent = "保存"
+  saveBtn.addEventListener("click", async () => {
+    const items = {}
+    for (const cb of Array.from(body.querySelectorAll(".skillCb"))) {
+      items[cb.dataset.skillName] = cb.checked
+    }
+    try {
+      await saveSkills(rt, name, items)
+      setToast("Skills 已保存 ✅")
+    } catch (e) {
+      setToast("保存失败: " + String(e))
+    }
+  })
+  saveRow.appendChild(saveBtn)
+  const resetBtn = document.createElement("button")
+  resetBtn.textContent = "撤销"
+  resetBtn.addEventListener("click", () => refreshSkills())
+  saveRow.appendChild(resetBtn)
+  body.appendChild(saveRow)
 }
 
 async function refreshNanoGhostMcp() {
   if (_activeRuntime !== "nanoghost") return
   const name = _activeName
-  const allow = await ngMcpAllowlistGet(name)
-  const inp = document.getElementById("ngMcpAllowlist")
-  if (inp) inp.value = (allow.enabled_only || []).join(",")
-  const tbody = document.getElementById("ngMcpProbeBody")
-  if (tbody) tbody.textContent = ""
-  const toolsOut = document.getElementById("ngMcpToolsOut")
-  if (toolsOut) toolsOut.value = ""
-}
-
-async function refreshHermesExtras() {
-  const name = _activeName
+  const body = document.getElementById("mcpBody")
+  if (!body) return
+  body.innerHTML = '<div class="hint">加载中...</div>'
+  
   try {
-    const cfg = await apiJson(`/api/profiles/${encodeURIComponent(name)}/config/raw`, { method: "GET" })
-    const cfgPathEl = document.getElementById("cfgPath")
-    if (cfgPathEl) cfgPathEl.textContent = cfg.path ? `path: ${cfg.path}` : ""
-    const ta = document.getElementById("cfgRaw")
-    if (ta) ta.value = cfg.raw || ""
-  } catch (e) {
-    setToast(String(e))
-  }
-
-  try {
-    const soul = await apiJson(`/api/profiles/${encodeURIComponent(name)}/soul/raw`, { method: "GET" })
-    const soulPathEl = document.getElementById("soulPath")
-    if (soulPathEl) soulPathEl.textContent = soul.path ? `path: ${soul.path}` : ""
-    const ta = document.getElementById("soulRaw")
-    if (ta) ta.value = soul.raw || ""
-  } catch (e) {
-    setToast(String(e))
-  }
-
-  try {
-    const userMem = await apiJson(`/api/profiles/${encodeURIComponent(name)}/memories/user/raw`, { method: "GET" })
-    const p1 = document.getElementById("userMemPath")
-    if (p1) p1.textContent = userMem.path ? `path: ${userMem.path}` : ""
-    const ta1 = document.getElementById("userMemRaw")
-    if (ta1) ta1.value = userMem.raw || ""
-  } catch (e) {
-    setToast(String(e))
-  }
-
-  try {
-    const mem = await apiJson(`/api/profiles/${encodeURIComponent(name)}/memories/memory/raw`, { method: "GET" })
-    const p2 = document.getElementById("memoryMemPath")
-    if (p2) p2.textContent = mem.path ? `path: ${mem.path}` : ""
-    const ta2 = document.getElementById("memoryMemRaw")
-    if (ta2) ta2.value = mem.raw || ""
-  } catch (e) {
-    setToast(String(e))
-  }
-
-  try {
-    const cr = await apiJson(`/api/profiles/${encodeURIComponent(name)}/cron`, { method: "GET" })
-    const cd = document.getElementById("cronDir")
-    if (cd) cd.textContent = cr.dir ? `dir: ${cr.dir}` : ""
-    const body = document.getElementById("cronBody")
-    if (body) {
-      body.textContent = ""
-      if (cr.items.length === 0) {
-        body.textContent = "暂无 cron 任务"
-        body.className = "hint"
-      } else {
-        body.className = ""
-        for (const it of cr.items) {
-          const block = document.createElement("div")
-          block.style.marginTop = "10px"
-          const label = document.createElement("div")
-          label.style.fontWeight = "700"
-          label.style.fontSize = "13px"
-          label.textContent = it.name
-          block.appendChild(label)
-          const pre = document.createElement("pre")
-          pre.style.fontSize = "12px"
-          pre.style.margin = "4px 0"
-          pre.style.padding = "8px"
-          pre.style.background = "var(--panel)"
-          pre.style.borderRadius = "8px"
-          pre.style.overflow = "auto"
-          pre.style.maxHeight = "200px"
-          pre.textContent = it.raw || "(empty)"
-          block.appendChild(pre)
-          body.appendChild(block)
-        }
-      }
+    const [allowR, probeR, toolsR] = await Promise.all([
+      ngMcpAllowlistGet(name),
+      ngMcpProbe(name),
+      loadTools("nanoghost", name),
+    ])
+    
+    const enabledSet = new Set((allowR.enabled_only || []).filter(Boolean))
+    const actionAllowlist = allowR.action_allowlist || {}
+    const allServers = probeR.items || []
+    
+    const serverActions = {}
+    for (const s of toolsR.mcp_servers || []) {
+      serverActions[s.server_id] = s.actions || []
     }
-  } catch (e) {
-    setToast(String(e))
-  }
-
-  try {
-    const lg = await apiJson(`/api/profiles/${encodeURIComponent(name)}/logs`, { method: "GET" })
-    const ld = document.getElementById("logsDir")
-    if (ld) ld.textContent = lg.dir ? `dir: ${lg.dir}` : ""
-    const body = document.getElementById("logsBody")
-    if (body) {
-      body.textContent = ""
-      if (lg.files.length === 0) {
-        body.textContent = "暂无日志"
-        body.className = "hint"
-      } else {
-        body.className = ""
-        for (const f of lg.files) {
-          const block = document.createElement("div")
-          block.style.marginTop = "8px"
-          const label = document.createElement("div")
-          label.style.cursor = "pointer"
-          label.style.userSelect = "none"
-          label.style.display = "flex"
-          label.style.alignItems = "center"
-          label.style.gap = "10px"
-          label.style.padding = "4px 0"
-          const arrow = document.createElement("span")
-          arrow.textContent = "\u25b6"
-          arrow.style.fontSize = "11px"
-          const nameSpan = document.createElement("span")
-          nameSpan.style.fontWeight = "700"
-          nameSpan.style.fontSize = "13px"
-          const sizeKB = (f.size / 1024).toFixed(1)
-          nameSpan.textContent = `${f.name} (${sizeKB} KB)`
-          label.appendChild(arrow)
-          label.appendChild(nameSpan)
-          block.appendChild(label)
-          const content = document.createElement("pre")
-          content.style.display = "none"
-          content.style.fontSize = "11px"
-          content.style.margin = "4px 0"
-          content.style.padding = "8px"
-          content.style.background = "var(--panel)"
-          content.style.borderRadius = "8px"
-          content.style.overflow = "auto"
-          content.style.maxHeight = "400px"
-          content.textContent = f.tail || "(empty)"
-          block.appendChild(content)
-          label.addEventListener("click", () => {
-            const isOpen = content.style.display !== "none"
-            content.style.display = isOpen ? "none" : ""
-            arrow.textContent = isOpen ? "\u25b6" : "\u25bc"
-          })
-          body.appendChild(block)
-        }
-      }
+    for (const s of allServers) {
+      if (!serverActions[s.id]) serverActions[s.id] = []
     }
-  } catch (e) {
-    setToast(String(e))
-  }
-
-  try {
-    const ss = await apiJson(`/api/profiles/${encodeURIComponent(name)}/sessions`, { method: "GET" })
-    const sd = document.getElementById("sessionsDir")
-    if (sd) sd.textContent = ss.dir ? `dir: ${ss.dir}` : ""
-    const body = document.getElementById("sessionsBody")
-    if (body) {
-      body.textContent = ""
-      if (ss.items.length === 0) {
-        body.textContent = "暂无 sessions"
-        body.className = "hint"
-      } else {
-        body.className = ""
-        const tbl = document.createElement("table")
-        const thead = document.createElement("thead")
-        const thr = document.createElement("tr")
-        for (const h of ["名称", "大小", "修改时间"]) {
-          const th = document.createElement("th")
-          th.textContent = h
-          thr.appendChild(th)
-        }
-        thead.appendChild(thr)
-        tbl.appendChild(thead)
-        const tbdy = document.createElement("tbody")
-        for (const it of ss.items) {
+    
+    body.textContent = ""
+    
+    if (!allServers.length) {
+      body.innerHTML = '<div class="hint">未安装 MCP 服务器</div>'
+      return
+    }
+    
+    for (const svr of allServers) {
+      const sid = svr.id
+      const actions = serverActions[sid] || []
+      const currentAllowed = actionAllowlist[sid]
+      const serverEnabled = enabledSet.has(sid)
+      
+      const block = document.createElement("div")
+      block.style.marginTop = "10px"
+      
+      const header = document.createElement("div")
+      header.style.cursor = "pointer"
+      header.style.userSelect = "none"
+      header.style.display = "flex"
+      header.style.alignItems = "center"
+      header.style.gap = "10px"
+      header.style.padding = "6px 0"
+      
+      const arrow = document.createElement("span")
+      arrow.textContent = "\u25b6"
+      arrow.style.fontSize = "11px"
+      
+      const selAll = document.createElement("input")
+      selAll.type = "checkbox"
+      selAll.title = "启用/禁用此服务器"
+      selAll.checked = serverEnabled
+      
+      const nameEl = document.createElement("code")
+      nameEl.textContent = sid
+      nameEl.style.fontWeight = "700"
+      nameEl.style.fontSize = "13px"
+      
+      const transportHint = document.createElement("span")
+      transportHint.style.fontSize = "11px"
+      transportHint.style.color = "var(--muted)"
+      transportHint.textContent = actions.length + " 个工具"
+      
+      const statusDot = document.createElement("span")
+      statusDot.className = "dot" + (svr.ok ? " ok" : svr.error ? " bad" : "")
+      statusDot.style.marginLeft = "auto"
+      
+      header.appendChild(arrow)
+      header.appendChild(selAll)
+      header.appendChild(nameEl)
+      header.appendChild(transportHint)
+      header.appendChild(statusDot)
+      block.appendChild(header)
+      
+      const tbl = document.createElement("table")
+      tbl.style.display = "none"
+      const tbdy = document.createElement("tbody")
+      
+      if (actions.length > 0) {
+        selAll.addEventListener("change", () => {
+          for (const cb of Array.from(tbl.querySelectorAll(".mcpActCb"))) {
+            cb.checked = selAll.checked
+          }
+        })
+        
+        const allowedSet = new Set(currentAllowed || [])
+        const allEnabled = !currentAllowed
+        
+        for (const a of actions) {
           const tr = document.createElement("tr")
-          const tdN = document.createElement("td")
-          tdN.textContent = it.preview || it.name
-          const tdS = document.createElement("td")
-          const sizeKB = (it.size / 1024).toFixed(1)
-          tdS.textContent = `${sizeKB} KB`
-          const tdM = document.createElement("td")
-          const d = new Date(it.mtime * 1000)
-          tdM.textContent = d.toLocaleString()
-          tdM.style.fontSize = "12px"
-          tdM.style.color = "var(--muted)"
-          tr.appendChild(tdN)
-          tr.appendChild(tdS)
-          tr.appendChild(tdM)
+          const tdCb = document.createElement("td")
+          const tdName = document.createElement("td")
+          
+          const cb = document.createElement("input")
+          cb.type = "checkbox"
+          cb.className = "mcpActCb"
+          cb.dataset.serverId = sid
+          cb.dataset.actionName = a
+          cb.checked = (allEnabled || allowedSet.has(a)) && serverEnabled
+          
+          const code = document.createElement("code")
+          code.textContent = a
+          code.style.fontSize = "12px"
+          
+          tdCb.appendChild(cb)
+          tdName.appendChild(code)
+          tr.appendChild(tdCb)
+          tr.appendChild(tdName)
           tbdy.appendChild(tr)
         }
-        tbl.appendChild(tbdy)
-        body.appendChild(tbl)
+      } else {
+        const tr = document.createElement("tr")
+        const td = document.createElement("td")
+        td.colSpan = 2
+        td.className = "hint"
+        td.textContent = "(暂无工具信息)"
+        td.style.padding = "8px 0"
+        tr.appendChild(td)
+        tbdy.appendChild(tr)
       }
+      
+      tbl.appendChild(tbdy)
+      block.appendChild(tbl)
+      
+      header.addEventListener("click", (ev) => {
+        if (ev.target === selAll) return
+        const isOpen = tbl.style.display !== "none"
+        tbl.style.display = isOpen ? "none" : ""
+        arrow.textContent = isOpen ? "\u25b6" : "\u25bc"
+      })
+      
+      body.appendChild(block)
     }
+    
+    const saveRow = document.createElement("div")
+    saveRow.style.cssText = "margin-top:16px;display:flex;gap:10px;align-items:center"
+    
+    const saveBtn = document.createElement("button")
+    saveBtn.className = "primary"
+    saveBtn.textContent = "保存"
+    saveBtn.addEventListener("click", async () => {
+      const enabledServers = []
+      const actionAllowlistSave = {}
+      
+      for (const block of Array.from(body.children)) {
+        if (block === saveRow) continue
+        const headerCb = block.querySelector("input[type=checkbox]:first-child")
+        if (!headerCb) continue
+        const sid = headerCb.nextElementSibling?.nextElementSibling?.textContent || ""
+        if (!sid) continue
+        
+        if (headerCb.checked) {
+          enabledServers.push(sid)
+          const checkedActions = []
+          for (const cb of Array.from(block.querySelectorAll(".mcpActCb"))) {
+            if (cb.checked) checkedActions.push(cb.dataset.actionName)
+          }
+          if (checkedActions.length > 0) {
+            actionAllowlistSave[sid] = checkedActions
+          }
+        }
+      }
+      
+      try {
+        await ngMcpAllowlistPut(name, enabledServers)
+        await ngMcpActionAllowlistPut(name, actionAllowlistSave)
+        setToast("MCP 已保存 ✅")
+      } catch (e) {
+        setToast("保存失败: " + String(e))
+      }
+    })
+    saveRow.appendChild(saveBtn)
+    
+    const resetBtn = document.createElement("button")
+    resetBtn.textContent = "撤销"
+    resetBtn.addEventListener("click", () => refreshNanoGhostMcp())
+    saveRow.appendChild(resetBtn)
+    
+    body.appendChild(saveRow)
+    
   } catch (e) {
-    setToast(String(e))
+    body.innerHTML = '<div class="hint" style="color:var(--bad)">加载失败: ' + e.message + '</div>'
   }
 }
 
@@ -920,3 +1019,49 @@ async function refreshChannels() {
     return
   }
 }
+
+
+async function refreshTools() {
+  const rt = _activeRuntime
+  const name = _activeName
+  if (!name) return
+  const body = document.getElementById("toolsBody")
+  if (!body) return
+  body.innerHTML = '<div class="hint">加载工具列表中...</div>'
+  try {
+    const r = await loadTools(rt, name)
+    if (!r || !r.ok) {
+      body.innerHTML = '<div class="hint" style="color:var(--bad)">获取失败</div>'
+      return
+    }
+    const builtins = r.builtins || []
+    const mcp = r.mcp_servers || []
+    const total = builtins.length + mcp.length
+    
+    let html = '<div class="card"><div class="cardHead"><div class="cardTitle">注册工具</div><span class="pill">' + total + ' 个</span></div>'
+    html += '<div class="cardBody"><table><thead><tr><th>工具名</th><th>分类</th><th>描述 / 操作</th></tr></thead><tbody>'
+    
+    // Builtins
+    for (const t of builtins) {
+      html += '<tr><td><code>' + t.name + '</code></td><td><span class="pill">' + t.category + '</span></td><td style="font-size:12px;color:var(--muted)">' + t.description + '</td></tr>'
+    }
+    
+    // MCP folded
+    for (const s of mcp) {
+      const status = s.error ? '<span class="pill bad">错误</span>' : '<span class="pill ok">' + s.tools_count + ' 个</span>'
+      const actions = s.actions && s.actions.length ?
+        s.actions.map(function(a) { return '<code>' + a + '</code>'; }).join(', ') :
+        '<span class="hint">(无)</span>'
+      html += '<tr><td><code>' + s.tool_name + '</code></td><td><span class="pill">mcp</span></td><td style="font-size:12px;color:var(--muted)">' + (s.description || '') + ' ' + status + '</td></tr>'
+      if (s.error) html += '<tr><td colspan="3" style="color:var(--bad);font-size:11px">错误: ' + s.error + '</td></tr>'
+    }
+    
+    html += '</tbody></table></div></div>'
+    body.innerHTML = html
+  } catch (e) {
+    body.innerHTML = '<div class="hint" style="color:var(--bad)">加载失败: ' + e.message + '</div>'
+  }
+}
+
+
+

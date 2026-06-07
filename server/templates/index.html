@@ -287,6 +287,7 @@
           <button class="tabBtn" data-tab="cron">Cron</button>
           <button class="tabBtn" data-tab="logs">Logs</button>
           <button class="tabBtn" data-tab="sessions">Sessions</button>
+          <button class="tabBtn" data-tab="tools">Tools</button>
         </nav>
 
         <section id="panel-env" class="panel active">
@@ -323,7 +324,7 @@
           <div class="card">
             <div class="cardHead">
               <div class="cardTitle">config.yaml (raw)</div>
-              <span id="cfgPath" class="hint"></span>
+              <span id="cfgPath" class="hint">实例核心配置（YAML）</span>
             </div>
             <div class="cardBody">
               <div class="row">
@@ -338,7 +339,7 @@
           <div class="card">
             <div class="cardHead">
               <div class="cardTitle">SOUL.md (raw)</div>
-              <span id="soulPath" class="hint"></span>
+              <span id="soulPath" class="hint">身份/总规则/长期偏好，纯 Markdown</span>
             </div>
             <div class="cardBody">
               <div class="row">
@@ -383,16 +384,15 @@
           <div id="nanoghost-memories-block" style="display:none">
             <div class="card">
               <div class="cardHead">
-                <div class="cardTitle">memory.md (raw)</div>
+                <div class="cardTitle">memory.md</div>
                 <span id="ngMemPath" class="hint"></span>
               </div>
               <div class="cardBody">
                 <div class="row">
-                  <button id="ngMemSave" class="primary">保存</button>
+                  <button id="ngMemEdit" class="secondary">编辑</button>
                   <button id="ngMemRefresh" class="secondary">刷新</button>
                 </div>
-                <textarea id="ngMemRaw" spellcheck="false"></textarea>
-                <div class="hint">格式：## section_name\n- item1\n- item2</div>
+                <div id="ngMemMdPreview" style="font-size:13px;line-height:1.7;padding:8px"></div>
               </div>
             </div>
             <div class="card" style="margin-top:12px">
@@ -407,15 +407,14 @@
                 <div class="cardTitle">流程记忆卡片</div>
                 <span id="ngMemCardsCount" class="hint"></span>
               </div>
-              <div class="cardBody" id="ngMemCardsBody"></div>
+              <div class="cardBody" id="ngMemCardsBody" style="max-height:460px;overflow-y:auto"></div>
             </div>
             <div class="card" style="margin-top:12px">
               <div class="cardHead">
                 <div class="cardTitle">流程转移图</div>
-                <span class="hint">SQLite agent_memory_edges</span>
               </div>
               <div class="cardBody">
-                <div id="ngMemGraph" style="min-height:400px;border:1px solid var(--border);border-radius:12px;overflow:hidden"></div>
+                <button id="openNgMemGraphBtn" class="primary" style="width:100%;padding:12px;font-size:14px" onclick="openNgMemGraph()">查看记忆图谱</button>
               </div>
             </div>
           </div>
@@ -425,7 +424,7 @@
           <div class="card">
             <div class="cardHead">
               <div class="cardTitle">Prompts</div>
-              <span id="promptsDir" class="hint"></span>
+              <span id="promptsDir" class="hint">自定义 prompt 模板</span>
             </div>
             <div class="cardBody" id="promptsBody"></div>
           </div>
@@ -435,45 +434,19 @@
           <div class="card">
             <div class="cardHead">
               <div class="cardTitle">Skills</div>
-              <span id="skillsHint" class="hint"></span>
+              <span id="skillsHint" class="hint">SKILL.md 技能包，按 source/category 分组</span>
             </div>
             <div class="cardBody" id="skillsBody"></div>
           </div>
         </section>
 
-        <section id="panel-mcp" class="panel">
+                <section id="panel-mcp" class="panel">
           <div class="card">
             <div class="cardHead">
-              <div class="cardTitle">MCP（NanoGhost）</div>
-              <span class="hint">全局安装全集；实例通过 mcp.enabled_only 白名单控制可见 MCP</span>
+              <div class="cardTitle">MCP</div>
+              <span class="hint">折叠组、勾选 = 启用该服务器及其操作</span>
             </div>
-            <div class="cardBody">
-              <div class="row" style="flex-wrap:wrap">
-                <button id="ngMcpEditGlobal">编辑全局 Registry</button>
-                <input id="ngMcpAllowlist" placeholder="enabled_only: server1,server2" style="min-width:320px" />
-                <button id="ngMcpAllowlistLoad">读取白名单</button>
-                <button id="ngMcpAllowlistSave" class="primary">保存白名单</button>
-                <button id="ngMcpProbe">探测</button>
-              </div>
-              <table style="margin-top:10px">
-                <thead>
-                  <tr>
-                    <th style="width:16%">ID</th>
-                    <th>URL</th>
-                    <th style="width:70px">OK</th>
-                    <th style="width:140px">Status</th>
-                    <th style="width:110px">Dur(ms)</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody id="ngMcpProbeBody"></tbody>
-              </table>
-              <div class="row" style="margin-top:10px; flex-wrap:wrap">
-                <input id="ngMcpToolsServerId" placeholder="server_id" style="min-width:220px" />
-                <button id="ngMcpToolsFetch">tools/list</button>
-              </div>
-              <textarea id="ngMcpToolsOut" spellcheck="false" style="min-height:220px; margin-top:8px"></textarea>
-            </div>
+            <div class="cardBody" id="mcpBody"></div>
           </div>
         </section>
 
@@ -481,7 +454,7 @@
           <div class="card">
             <div class="cardHead">
               <div class="cardTitle">渠道/频道</div>
-              <span id="chPath" class="hint"></span>
+              <span id="chPath" class="hint">消息平台接入配置</span>
             </div>
             <div class="cardBody">
               <div id="channelsBody"></div>
@@ -528,34 +501,26 @@
           </div>
         </section>
 
-        <section class="card" style="margin-top:14px">
-          <div class="cardHead">
-            <div class="cardTitle">MD 文件说明（建议管理）</div>
-            <span class="hint">用于约束行为与沉淀偏好</span>
-          </div>
-          <div class="cardBody">
-            <div class="hint">
-              <div><code>SOUL.md</code>（profile 级）：身份/总规则/长期偏好。格式：纯 Markdown（无需分隔符）。</div>
-              <div style="margin-top:6px"><code>.hermes.md</code> 或 <code>HERMES.md</code>（项目级）：项目规则/约束/输出格式等。查找方式：从工作目录向上查找，命中第一个即注入。格式：纯 Markdown；可带 YAML frontmatter，但注入时只使用正文。</div>
-              <div style="margin-top:6px"><code>memories/USER.md</code>（profile 级）：关于用户的偏好与沟通习惯。格式：多条目文本，用 <code>\n§\n</code> 分隔。</div>
-              <div style="margin-top:6px"><code>memories/MEMORY.md</code>（profile 级）：长期事实/工具习惯/环境约定。格式：多条目文本，用 <code>\n§\n</code> 分隔。</div>
+        <section id="panel-tools" class="panel">
+          <div class="card">
+            <div class="cardHead">
+              <div class="cardTitle">已注册工具</div>
+              <span class="hint">Builtin + MCP（折叠）+ Skills</span>
             </div>
-            <pre style="margin:0; padding:10px; background:var(--panel); border-radius:12px; overflow:auto; font-size:12px">USER.md / MEMORY.md 示例：
-
-用户偏好：回答尽量简洁；命令可复制；默认中文
-
-§
-
-环境：Hermes profiles 位于 E:\Hermes\...\ .hermes\profiles
-</pre>
+            <div class="cardBody" id="toolsBody">
+              <div class="hint" style="margin-bottom:8px">工具列表中数据是透过反向读取 MCP servers/instance config 得到的结果</div>
+            </div>
           </div>
         </section>
+
+
 
         <div id="toast"></div>
       </main>
     </div>
     <!-- G6 v5 (图谱引擎) - 前端依赖，见 requirements.txt 中说明 -->
-    <script src="/static/g6.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/static/g6.min.js"></script>
     <script src="/static/js/helpers.js" defer></script>
     <script src="/static/js/state.js" defer></script>
     <script src="/static/js/api.js" defer></script>

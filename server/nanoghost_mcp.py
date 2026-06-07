@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import json
 import re
+import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin
@@ -67,7 +70,6 @@ def _interpolate_env_vars(s: str, env: dict[str, str]) -> str:
     def repl(match: re.Match) -> str:
         key = match.group(1)
         return env.get(key, "")
-
     return _ENV_VAR_PATTERN.sub(repl, s)
 
 
@@ -93,7 +95,7 @@ def _mask_headers(headers: dict) -> dict:
             else:
                 out[ks] = "***"
         else:
-            out[ks] = vs if len(vs) <= 16 else (vs[:8] + "…" + vs[-4:])
+            out[ks] = vs if len(vs) <= 16 else (vs[:8] + "\u2026" + vs[-4:])
     return out
 
 
@@ -216,7 +218,6 @@ def _discover_message_url(*, base_url: str, headers: dict[str, str], timeout_sec
 
 def json_loads_safe(s: str):
     import json
-
     return json.loads(s)
 
 
@@ -228,8 +229,6 @@ def _post_jsonrpc(
     params: dict,
     timeout_seconds: float,
 ) -> tuple[bool, object, str | None, int]:
-    import uuid
-
     t0 = time.time()
     t = max(0.2, float(timeout_seconds))
     timeout = httpx.Timeout(connect=min(5.0, t), read=t, write=t, pool=min(5.0, t))
@@ -277,6 +276,211 @@ class NanoGhostMcpProbeItem:
     duration_ms: int
 
 
+def _exec_stdio_mcp(
+    command: str,
+    args: list[str],
+    messages: list[dict],
+    timeout_seconds: float,
+):
+    """Open one subprocess, send multiple JSON-RPC messages, collect responses.
+    
+    Uses two separate processes for initialize and tools/list to handle
+    servers that reject pipelined requests before init is complete.
+    """
+    import time
+    t = max(10.0, float(timeout_seconds))
+    responses: list[dict | None] = []
+
+    if not messages:
+        return responses, None
+
+    def _run_process(msg_list, timeout=t):
+        """Run a subprocess, send messages, read stdout."""
+        input_data = b"".join(
+            json.dumps(m).encode("utf-8") + b"\n" for m in msg_list
+        )
+        try:
+            proc = subprocess.Popen(
+                [command] + args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            out, err = proc.communicate(input=input_data, timeout=timeout)
+            return out.decode("utf-8", errors="replace"), err.decode("utf-8", errors="replace"), proc.returncode, None
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return "", "", -1, "timeout"
+        except FileNotFoundError:
+            return "", "", -1, "command_not_found"
+        except Exception as e:
+            return "", "", -1, str(e)
+
+    def _parse_lines(raw):
+        """Parse newline-separated JSON lines."""
+        result = []
+        for line in raw.strip().split("\n"):
+            stripped = line.strip()
+            if stripped:
+                try:
+                    result.append(json.loads(stripped))
+                except json.JSONDecodeError:
+                    result.append(None)
+        return result
+
+    # Step 1: initialize
+    init_msg = messages[0]
+    remaining = messages[1:] if len(messages) > 1 else []
+
+    out1, _, rc1, err1 = _run_process([init_msg])
+    if err1:
+        return [], err1
+    init_resps = _parse_lines(out1)
+    responses.extend(init_resps)
+    if not init_resps:
+        return [], "no_initialize_response"
+
+    # Step 2: remaining messages (initialized notification + tools/list)
+    if remaining:
+        out2, _, rc2, err2 = _run_process(remaining)
+        if err2:
+            return responses, err2
+        responses.extend(_parse_lines(out2))
+
+    return responses, None
+def _probe_stdio_mcp(
+    *,
+    command: str,
+    args: list[str],
+    timeout_seconds: float,
+) -> tuple[bool, str, str | None, int]:
+    t0 = time.time()
+    init_id = uuid.uuid4().hex
+    list_id = uuid.uuid4().hex
+
+    messages = [
+        {
+            "jsonrpc": "2.0",
+            "id": init_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "openobstrator-probe", "version": "1.0.0"},
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": list_id,
+            "method": "tools/list",
+            "params": {},
+        },
+    ]
+
+    responses, err = _exec_stdio_mcp(command, args, messages, timeout_seconds)
+    if err:
+        dur = int((time.time() - t0) * 1000)
+        return False, "error", err, dur
+
+    init_resp = None
+    for r in responses:
+        if r is not None and isinstance(r, dict) and r.get("id") == init_id:
+            init_resp = r
+            break
+    if init_resp is None and responses:
+        init_resp = responses[0]
+    if init_resp is None:
+        dur = int((time.time() - t0) * 1000)
+        return False, "error", "no initialize response", dur
+    if isinstance(init_resp, dict) and init_resp.get("error"):
+        err_obj = init_resp["error"]
+        err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+        dur = int((time.time() - t0) * 1000)
+        return False, "error", err_msg, dur
+
+    list_resp = None
+    for r in responses:
+        if r is not None and isinstance(r, dict) and r.get("id") == list_id:
+            list_resp = r
+            break
+    if list_resp is None:
+        for r in reversed(responses):
+            if r is not None and r is not init_resp:
+                list_resp = r
+                break
+    if list_resp is not None and isinstance(list_resp, dict) and list_resp.get("error"):
+        err_obj = list_resp["error"]
+        err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+        dur = int((time.time() - t0) * 1000)
+        return False, "error", err_msg, dur
+
+    dur = int((time.time() - t0) * 1000)
+    return True, "connected", None, dur
+
+
+def _list_tools_stdio(
+    *,
+    command: str,
+    args: list[str],
+    timeout_seconds: float,
+) -> tuple[bool, object, str | None, int]:
+    t0 = time.time()
+    init_id = uuid.uuid4().hex
+    list_id = uuid.uuid4().hex
+
+    messages = [
+        {
+            "jsonrpc": "2.0",
+            "id": init_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "openobstrator-probe", "version": "1.0.0"},
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": list_id,
+            "method": "tools/list",
+            "params": {},
+        },
+    ]
+
+    responses, err = _exec_stdio_mcp(command, args, messages, timeout_seconds)
+    if err:
+        return False, None, err, int((time.time() - t0) * 1000)
+
+    list_resp = None
+    for r in responses:
+        if r is not None and isinstance(r, dict) and r.get("id") == list_id:
+            list_resp = r
+            break
+    if list_resp is None:
+        for r in reversed(responses):
+            if r is not None:
+                list_resp = r
+                break
+    if list_resp is None:
+        return False, None, "no tools/list response", int((time.time() - t0) * 1000)
+    if isinstance(list_resp, dict) and list_resp.get("error"):
+        err_obj = list_resp["error"]
+        err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+        return False, None, err_msg, int((time.time() - t0) * 1000)
+    result = list_resp.get("result") if isinstance(list_resp, dict) else None
+    return True, result, None, int((time.time() - t0) * 1000)
+
+
 def probe_global_mcp_servers(raw: str) -> list[NanoGhostMcpProbeItem]:
     servers = parse_global_mcp_servers(raw)
     out: list[NanoGhostMcpProbeItem] = []
@@ -287,17 +491,27 @@ def probe_global_mcp_servers(raw: str) -> list[NanoGhostMcpProbeItem]:
         if not enabled:
             out.append(NanoGhostMcpProbeItem(sid, enabled, transport, url, False, "disabled", "disabled", 0))
             continue
-        if transport != "http_sse":
+        if transport == "http_sse":
+            if not url or not url.strip():
+                out.append(NanoGhostMcpProbeItem(sid, enabled, transport, None, False, "invalid", "missing url", 0))
+                continue
+            headers = scfg.get("headers") if isinstance(scfg.get("headers"), dict) else {}
+            headers2 = {str(k): str(v) for k, v in headers.items()}
+            t = float(scfg.get("timeout_seconds") or 30)
+            ok, status, err, dur = _probe_http_sse(url=url, headers=headers2, timeout_seconds=t)
+            out.append(NanoGhostMcpProbeItem(sid, enabled, transport, url, ok, status, err, int(dur or 0)))
+        elif transport == "stdio":
+            cmd = scfg.get("command") if isinstance(scfg.get("command"), str) else ""
+            cmd_args = scfg.get("args") if isinstance(scfg.get("args"), list) else []
+            if not cmd:
+                out.append(NanoGhostMcpProbeItem(sid, enabled, transport, None, False, "invalid", "missing command", 0))
+                continue
+            t = float(scfg.get("timeout_seconds") or 30)
+            ok, status, err, dur = _probe_stdio_mcp(command=cmd, args=cmd_args, timeout_seconds=t)
+            out.append(NanoGhostMcpProbeItem(sid, enabled, transport, None, ok, status, err, int(dur or 0)))
+        else:
             out.append(NanoGhostMcpProbeItem(sid, enabled, transport, url, False, "unsupported", "unsupported transport", 0))
             continue
-        if not url or not url.strip():
-            out.append(NanoGhostMcpProbeItem(sid, enabled, transport, None, False, "invalid", "missing url", 0))
-            continue
-        headers = scfg.get("headers") if isinstance(scfg.get("headers"), dict) else {}
-        headers2 = {str(k): str(v) for k, v in headers.items()}
-        t = float(scfg.get("timeout_seconds") or 30)
-        ok, status, err, dur = _probe_http_sse(url=url, headers=headers2, timeout_seconds=t)
-        out.append(NanoGhostMcpProbeItem(sid, enabled, transport, url, ok, status, err, int(dur or 0)))
     return out
 
 

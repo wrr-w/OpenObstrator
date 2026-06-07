@@ -1,0 +1,31 @@
+{% extends "page_base.html" %}
+
+{% block title %}记忆图谱{% endblock %}
+
+{% block header_hint %}<span id="ngInstTitle"></span>{% endblock %}
+
+{% block content %}
+  <input type="hidden" id="ngInstName" />
+  <div class="card">
+    <div class="cardHead">
+      <div class="cardTitle">流程转移图</div>
+      <div class="hint">滚轮缩放 + 拖拽平移</div>
+    </div>
+    <div class="cardBody">
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button data-level="1" class="_ngLvl" style="font-size:11px;padding:2px 12px;border-radius:6px">L1 领域</button>
+        <button data-level="2" class="_ngLvl" style="font-size:11px;padding:2px 12px;border-radius:6px">L2 动作</button>
+        <button data-level="3" class="_ngLvl" style="font-size:11px;padding:2px 12px;border-radius:6px">L3 资源</button>
+        <button data-level="4" class="_ngLvl" style="font-size:11px;padding:2px 12px;border-radius:6px">L4 明细</button>
+      </div>
+      <div id="ngToolbar" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"></div>
+      <div id="ngMemGraph" style="min-height:60vh;border:1px solid var(--border);border-radius:12px;overflow:hidden"></div>
+      <div id="toast"></div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/g6.min.js"></script>
+  <script src="/static/pages/memory_graph.js" defer></script>
+{% endblock %}

@@ -1001,3 +1001,253 @@ function openTemplateMgrModal(initialRuntime, initialTemplateId) {
     })()
   })
 }
+
+
+function openMemoryCardModal(card, name) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div")
+    overlay.style.position = "fixed"
+    overlay.style.inset = "0"
+    overlay.style.background = "rgba(0,0,0,0.35)"
+    overlay.style.display = "flex"
+    overlay.style.alignItems = "center"
+    overlay.style.justifyContent = "center"
+    overlay.style.zIndex = "9999"
+
+    const cardEl = document.createElement("div")
+    cardEl.style.cssText = "width:680px;max-width:94vw;max-height:90vh;overflow-y:auto;border:1px solid var(--border);background:var(--bg);border-radius:16px;box-shadow:var(--shadow);padding:16px"
+
+    // Title
+    const title = document.createElement("div")
+    title.style.cssText = "font-weight:700;font-size:14px;margin-bottom:4px;color:var(--brand)"
+    title.textContent = "记忆卡片"
+    cardEl.appendChild(title)
+
+    // Card ID hint
+    const idHint = document.createElement("div")
+    idHint.style.cssText = "font-size:10px;color:var(--muted);margin-bottom:12px"
+    let hints = "ID: " + (card.id || "-")
+    if (card.flow_hash) hints += " | flow: " + card.flow_hash
+    if (card.l1_code != null) hints += " | L1: " + card.l1_code
+    if (card.success_count != null) hints += " | 成功: " + card.success_count
+    idHint.textContent = hints
+    cardEl.appendChild(idHint)
+
+    // intent_summary (readonly)
+    const intentLabel = document.createElement("div")
+    intentLabel.style.cssText = "font-weight:700;font-size:11px;color:var(--text);margin-bottom:3px"
+    intentLabel.textContent = "意图"
+    cardEl.appendChild(intentLabel)
+    const intentVal = document.createElement("div")
+    intentVal.textContent = card.user_input || ""
+    intentVal.style.cssText = "font-size:12px;color:var(--text);padding:6px 8px;background:var(--panel);border-radius:8px;margin-bottom:12px;line-height:1.5;word-break:break-all"
+    cardEl.appendChild(intentVal)
+
+    // Steps (operation sequence)
+    const stepsLabel = document.createElement("div")
+    stepsLabel.style.cssText = "font-weight:700;font-size:11px;color:var(--text);margin-bottom:3px"
+    stepsLabel.textContent = "操作序列"
+    cardEl.appendChild(stepsLabel)
+    
+    const stepsContainer = document.createElement("div")
+    stepsContainer.style.cssText = "max-height:300px;overflow-y:auto;background:var(--panel);border-radius:8px;padding:6px 8px;margin-bottom:12px;font-family:monospace;font-size:11px;line-height:1.6"
+    
+    let stepsRaw = card.steps_json_raw || "[]"
+    let steps = []
+    try { steps = JSON.parse(stepsRaw) } catch {}
+    
+    if (steps.length === 0) {
+      const empty = document.createElement("div")
+      empty.style.cssText = "color:var(--muted);font-size:11px"
+      empty.textContent = "(无步骤记录)"
+      stepsContainer.appendChild(empty)
+    } else {
+      for (let i = 0; i < steps.length; i++) {
+        const s = steps[i]
+        if (typeof s !== "object") {
+          const line = document.createElement("div")
+          line.textContent = "[" + (i+1) + "] " + String(s).slice(0, 120)
+          line.style.cssText = "padding:2px 0"
+          stepsContainer.appendChild(line)
+          continue
+        }
+        const stepNum = s.step || (i+1)
+        const method = s.method || "?"
+        const path = (s.path || s.command || "").slice(0, 150)
+        const ok = s.ok === true ? "\u2705" : s.ok === false ? "\u274c" : ""
+        const line = document.createElement("div")
+        line.style.cssText = "padding:3px 0;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:flex-start"
+        const numEl = document.createElement("span")
+        numEl.textContent = "#" + stepNum
+        numEl.style.cssText = "color:var(--brand);min-width:28px;flex-shrink:0"
+        const methodEl = document.createElement("span")
+        methodEl.textContent = method
+        methodEl.style.cssText = "color:#facc15;min-width:36px;flex-shrink:0;font-weight:600"
+        const pathEl = document.createElement("span")
+        pathEl.textContent = path + " " + ok
+        pathEl.style.cssText = "color:var(--text);word-break:break-all"
+        line.appendChild(numEl)
+        line.appendChild(methodEl)
+        line.appendChild(pathEl)
+        stepsContainer.appendChild(line)
+      }
+    }
+    cardEl.appendChild(stepsContainer)
+
+    // experience_notes
+    const expLabel = document.createElement("div")
+    expLabel.style.cssText = "font-weight:700;font-size:11px;color:var(--muted);margin-bottom:3px"
+    expLabel.textContent = "经验总结（experience）"
+    cardEl.appendChild(expLabel)
+    const expTa = document.createElement("textarea")
+    expTa.style.cssText = "width:100%;min-height:50px;max-height:120px;font-family:monospace;font-size:12px;padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);resize:vertical;margin-bottom:12px"
+    let expVal = card.experience_notes || ""
+    try { const ej = JSON.parse(expVal); expVal = Array.isArray(ej) ? ej.join("\n") : expVal } catch {}
+    expTa.value = expVal
+    cardEl.appendChild(expTa)
+
+    // Buttons row
+    const row = document.createElement("div")
+    row.style.cssText = "display:flex;gap:10px;justify-content:space-between;align-items:center"
+
+    const leftGroup = document.createElement("div")
+    leftGroup.style.cssText = "display:flex;gap:10px"
+
+    const deleteBtn = document.createElement("button")
+    deleteBtn.className = "danger"
+    deleteBtn.textContent = "删除"
+    deleteBtn.addEventListener("click", async () => {
+      if (!confirm("确认删除此卡片？\n(" + (card.user_input || "").slice(0, 40) + ")")) return
+      try {
+        await deleteNgMemoryCard(name, card.id)
+        setToast("卡片已删除 \u2705")
+        close("deleted")
+      } catch (e) {
+        setToast("删除失败: " + String(e))
+      }
+    })
+    leftGroup.appendChild(deleteBtn)
+
+    const rightGroup = document.createElement("div")
+    rightGroup.style.cssText = "display:flex;gap:10px"
+
+    const cancelBtn = document.createElement("button")
+    cancelBtn.textContent = "取消"
+    cancelBtn.addEventListener("click", () => close(false))
+
+    const saveBtn = document.createElement("button")
+    saveBtn.className = "primary"
+    saveBtn.textContent = "保存"
+    saveBtn.addEventListener("click", async () => {
+      const expLines = expTa.value.split("\n").map(s => s.trim()).filter(Boolean)
+      const toSave = {
+        pitfalls: "[]",
+        experience_notes: expLines.length ? JSON.stringify(expLines) : "[]",
+      }
+      try {
+        await updateNgMemoryCard(name, card.id, toSave.pitfalls, toSave.experience_notes)
+        setToast("卡片已保存 \u2705")
+        close(true)
+      } catch (e) {
+        setToast("保存失败: " + String(e))
+      }
+    })
+
+    rightGroup.appendChild(cancelBtn)
+    rightGroup.appendChild(saveBtn)
+    row.appendChild(leftGroup)
+    row.appendChild(rightGroup)
+    cardEl.appendChild(row)
+
+    overlay.appendChild(cardEl)
+    document.body.appendChild(overlay)
+
+    function close(v) {
+      overlay.remove()
+      resolve(v)
+    }
+
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) close(false)
+    })
+    document.addEventListener("keydown", function _key(e) {
+      if (e.key === "Escape") { close(false); document.removeEventListener("keydown", _key) }
+    })
+  })
+}
+
+function openNgMemoryEditModal(name, onSaved) {
+  // Load raw content first
+  loadNgMemoryRaw(name).then(r => {
+    const raw = r.raw || ""
+    
+    const overlay = document.createElement("div")
+    overlay.style.position = "fixed"
+    overlay.style.inset = "0"
+    overlay.style.background = "rgba(0,0,0,0.35)"
+    overlay.style.display = "flex"
+    overlay.style.alignItems = "center"
+    overlay.style.justifyContent = "center"
+    overlay.style.zIndex = "9999"
+
+    const cardEl = document.createElement("div")
+    cardEl.style.cssText = "width:680px;max-width:94vw;max-height:90vh;display:flex;flex-direction:column;border:1px solid var(--border);background:var(--bg);border-radius:16px;box-shadow:var(--shadow);padding:16px"
+
+    // Title
+    const title = document.createElement("div")
+    title.style.cssText = "font-weight:700;font-size:14px;margin-bottom:4px;color:var(--brand)"
+    title.textContent = "编辑 memory.md"
+    cardEl.appendChild(title)
+
+    const hint = document.createElement("div")
+    hint.style.cssText = "font-size:10px;color:var(--muted);margin-bottom:12px"
+    hint.textContent = "格式：## section_name\n- item1\n- item2"
+    cardEl.appendChild(hint)
+
+    // Textarea
+    const ta = document.createElement("textarea")
+    ta.spellcheck = false
+    ta.style.cssText = "flex:1;min-height:300px;font-family:monospace;font-size:12px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);resize:vertical"
+    ta.value = raw
+    cardEl.appendChild(ta)
+
+    // Buttons
+    const row = document.createElement("div")
+    row.style.cssText = "display:flex;gap:10px;justify-content:flex-end;margin-top:12px"
+
+    const cancelBtn = document.createElement("button")
+    cancelBtn.textContent = "取消"
+    cancelBtn.addEventListener("click", () => { overlay.remove() })
+
+    const saveBtn = document.createElement("button")
+    saveBtn.className = "primary"
+    saveBtn.textContent = "保存"
+    saveBtn.addEventListener("click", async () => {
+      try {
+        setToast("")
+        await saveNgMemoryRaw(name, ta.value)
+        setToast("已保存")
+        overlay.remove()
+        if (onSaved) onSaved()
+      } catch (e) {
+        setToast("保存失败: " + String(e))
+      }
+    })
+
+    row.appendChild(cancelBtn)
+    row.appendChild(saveBtn)
+    cardEl.appendChild(row)
+
+    overlay.appendChild(cardEl)
+    document.body.appendChild(overlay)
+
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) overlay.remove()
+    })
+    document.addEventListener("keydown", function _key(e) {
+      if (e.key === "Escape") { overlay.remove(); document.removeEventListener("keydown", _key) }
+    })
+  }).catch(e => {
+    setToast("加载 memory.md 失败: " + String(e))
+  })
+}

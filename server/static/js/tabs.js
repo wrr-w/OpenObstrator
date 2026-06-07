@@ -28,7 +28,9 @@ function clearPanelContents() {
   if (chBody) chBody.textContent = ""
   const promptsBody = document.getElementById("promptsBody")
   if (promptsBody) promptsBody.textContent = ""
-  if (_ngGraph) { _ngGraph.destroy(); _ngGraph = null }
+  if (_ngGraph) { try { _ngGraph.destroy() } catch (e) {}; _ngGraph = null }
+  const lvlBtns = document.getElementById("ngLevelBtns")
+  if (lvlBtns) lvlBtns._ngWired = false
   const ngGraph = document.getElementById("ngMemGraph")
   if (ngGraph) { ngGraph.textContent = ""; ngGraph.style.cssText = "" }
 }
@@ -54,6 +56,7 @@ async function loadTabData(tab) {
     case "mcp": if (!_loadedTabs.has("mcp")) { _loadedTabs.add("mcp"); await refreshNanoGhostMcp() } break
     case "memories": if (!_loadedTabs.has("memories")) { _loadedTabs.add("memories"); await refreshNanoGhostMemories() } break
     case "prompts": if (!_loadedTabs.has("prompts")) { _loadedTabs.add("prompts"); await refreshPrompts() } break
+    case "tools": if (!_loadedTabs.has("tools")) { _loadedTabs.add("tools"); await refreshTools() } break
     case "logs":
       if (rt === "hermes") {
         await refreshHermesExtras()

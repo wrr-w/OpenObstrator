@@ -11,6 +11,7 @@ _DEFAULT_EXCLUDES = frozenset(
         "__pycache__",
         ".pytest_cache",
         ".mypy_cache",
+        "runtime",
     }
 )
 

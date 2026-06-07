@@ -52,14 +52,36 @@ def _normalize_registry(raw: dict) -> dict:
 def load_registry(path: Path) -> dict:
     if not path.exists():
         return _default_registry()
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        path.unlink(missing_ok=True)
+        return _default_registry()
     if not isinstance(raw, dict):
         return _default_registry()
     return _normalize_registry(raw)
 
 
 def save_registry(path: Path, data: dict) -> None:
+    import shutil
     path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        tmp.replace(path)
+    except PermissionError:
+        # Windows: target may be open by another process.
+        try:
+            if path.exists():
+                path.unlink()
+            tmp.replace(path)
+        except Exception:
+            # Fallback to non-atomic overwrite
+            path.write_text(text, encoding="utf-8")
+            if tmp.exists():
+                tmp.unlink()
+    except OSError:
+        path.write_text(text, encoding="utf-8")
+        if tmp.exists():
+            tmp.unlink()
