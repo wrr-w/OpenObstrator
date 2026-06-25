@@ -22,9 +22,10 @@ from server.hermes_mcp import hermes_mcp_config_get as hermes_mcp_config_summary
 from server.hermes_mcp import probe_mcp_servers
 from server.hermes_mcp import read_hermes_config_raw
 from server.hermes_mcp import write_hermes_config_raw
-from server.nanoghost_mcp import list_tools_http_sse
 from server.nanoghost_mcp import _list_tools_stdio
+from server.nanoghost_mcp import _mcp_server_enabled
 from server.nanoghost_mcp import _probe_stdio_mcp
+from server.nanoghost_mcp import list_tools_http_sse
 from server.nanoghost_mcp import nanoghost_mcp_config_get as nanoghost_mcp_config_summary
 from server.nanoghost_mcp import nanoghost_global_config_path
 from server.nanoghost_mcp import parse_global_mcp_servers
@@ -41,7 +42,7 @@ from server.processes import is_pid_running, kill_pid_tree, spawn, spawn_logged,
 from server.registry import load_registry, save_registry
 from server.soulfile import read_raw_text, write_raw_text
 from server.skills import list_global_skills_runtime
-from server.skills import list_skills, list_skills_nanoghost, set_skill_enabled, set_skill_enabled_nanoghost
+from server.skills import list_skills, list_skills_nanoghost, scan_group_meta, set_skill_enabled, set_skill_enabled_nanoghost
 from server.settings import load_app_config
 from server.settings import resolve_hermes_root
 from server.settings import resolve_nanoghost_root
@@ -716,10 +717,22 @@ def sessions_get(name: str):
 
 
 def _nanoghost_repo_dir() -> Path:
+    # 1) Sibling folder (dev mode)
     cand = APP_ROOT.parent / "NanoGhost"
     if cand.is_dir() and cand.joinpath("run.py").is_file():
         return cand
-    raise HTTPException(status_code=500, detail="NanoGhost repo not found (expected sibling folder NanoGhost)")
+    # 2) From nanoghost_root config (parent of instances)
+    try:
+        nano_root = resolve_nanoghost_root(config_path=CONFIG_PATH)
+        if nano_root.parent.joinpath("run.py").is_file():
+            return nano_root.parent
+    except Exception:
+        pass
+    # 3) Known absolute path
+    known = Path(r"E:\OperationsAssistantORIG\Tech\Code\NanoGhost")
+    if known.is_dir() and known.joinpath("run.py").is_file():
+        return known
+    raise HTTPException(status_code=500, detail=f"NanoGhost repo not found (APP_ROOT={APP_ROOT})")
 
 
 def _nanoghost_run_py() -> Path:
@@ -934,6 +947,9 @@ def template_skills_get(runtime: str, platform: str | None = None, template_id: 
         items = list_skills_nanoghost(root, platform=platform, shared_dir=shared_dir)
     else:
         raise HTTPException(status_code=400, detail="openclaw not implemented")
+    group_meta: dict[str, str] = {}
+    if runtime == "nanoghost" and shared_dir.is_dir():
+        group_meta.update(scan_group_meta(shared_dir))
     return {
         "ok": True,
         "items": [
@@ -947,6 +963,7 @@ def template_skills_get(runtime: str, platform: str | None = None, template_id: 
             }
             for i in items
         ],
+        "group_meta": group_meta,
     }
 
 
@@ -1274,37 +1291,26 @@ def instance_service_status(runtime: str, name: str, service: str):
     if runtime == "nanoghost":
         if service != "gateway":
             raise HTTPException(status_code=404, detail="service not found")
-        inst = _nanoghost_instance_dir(name)
-        inst_name = inst.name if inst and inst.exists() else name
-        import subprocess
-        try:
-            r = subprocess.run(f"nanoghost gateway status -I {inst}", shell=True, capture_output=True, text=True, timeout=10)
-        except subprocess.TimeoutExpired:
-            return {"ok": True, "pid": None, "port": None, "running": False}
-        out = (r.stdout or "").strip()
-        err = (r.stderr or "").strip()
-        import json as _json
-        try:
-            parsed = _json.loads(out)
-            running = bool(parsed.get("running", False))
-            pid = parsed.get("pid") or None
-            if pid is not None:
-                pid = int(pid)
-        except Exception:
-            running = bool(out or err)
-            pid = None
         reg = load_registry(REGISTRY_PATH)
         rec = _proc_record(reg, "nanoghost", name, "gateway")
-        port = parsed.get("port") if isinstance(parsed, dict) else None
-        if port is not None:
-            port = int(port)
-        rec["pid"] = pid
-        rec["port"] = port
+        pid = rec.get("pid") if isinstance(rec, dict) else None
+        if pid is not None:
+            try:
+                pid = int(pid)
+            except (ValueError, TypeError):
+                pid = None
+        running = False
         if pid:
-            rec["started_at"] = rec.get("started_at") or int(time.time())
-        else:
-            rec["started_at"] = None
-        save_registry(REGISTRY_PATH, reg)
+            import subprocess as _sp
+            r = _sp.run(["C:\\Windows\\System32\\tasklist.exe", "/FI", f"PID eq {pid}", "/NH"],
+                        capture_output=True, text=True, timeout=5)
+            running = str(pid) in (r.stdout or "")
+        port = rec.get("port")
+        if port is not None:
+            try:
+                port = int(port)
+            except (ValueError, TypeError):
+                port = None
         return {"ok": True, "pid": pid, "port": port, "running": bool(running)}
     raise HTTPException(status_code=404, detail="service not found")
 
@@ -1326,33 +1332,27 @@ def instance_service_start(runtime: str, name: str, service: str):
         if rec.get("pid") and is_pid_running(int(rec["pid"])):
             logger.info("nanoghost gateway %s/%s already running (pid %s)", name, "gateway", rec["pid"])
             return {"ok": True, **_status_for_record(rec)}
-        import subprocess
-        import re as _pid_re
+        # Allocate port
+        used = _collect_used_ports(reg)
+        if not rec.get("port"):
+            rec["port"] = allocate_port(SERVICE_HOST, 19000, 19999, used=used)
+        port = int(rec["port"])
+        # Start NanoGhost exe as gateway
+        import subprocess as _sp
+        _nano_exe = _nanoghost_repo_dir() / "dist" / "NanoGhost" / "NanoGhost.exe"
         _env = dict(os.environ)
         _env["NANOGHOST_CALLER"] = "openobstrator"
-        r = subprocess.run(f"nanoghost gateway start -I {inst}", shell=True, timeout=30, env=_env)
-        if r.returncode != 0:
-            raise HTTPException(status_code=500, detail="gateway start failed")
-        r2 = subprocess.run(f"nanoghost gateway status -I {inst}", shell=True, capture_output=True, text=True, timeout=10)
-        status_out = (r2.stdout or "").strip()
-        pid = None
-        port = None
-        try:
-            import json as _status_json
-            parsed = _status_json.loads(status_out)
-            pid = parsed.get("pid") or None
-            port = parsed.get("port") or None
-            if pid is not None:
-                pid = int(pid)
-            if port is not None:
-                port = int(port)
-        except Exception:
-            pass
-        if pid:
-            rec["pid"] = pid
-            rec["port"] = port
-            rec["started_at"] = int(time.time())
-            save_registry(REGISTRY_PATH, reg)
+        sr = _sp.Popen(
+            [str(_nano_exe), "--gateway", "-I", str(inst), "--port", str(port)],
+            env=_env,
+        )
+        import time
+        time.sleep(3)
+        pid = sr.pid
+        rec["pid"] = pid
+        rec["port"] = port
+        rec["started_at"] = int(time.time())
+        save_registry(REGISTRY_PATH, reg)
         return {"ok": True, "pid": pid, "port": port}
     raise HTTPException(status_code=404, detail="service not found")
 
@@ -1366,24 +1366,19 @@ def instance_service_stop(runtime: str, name: str, service: str):
     if runtime == "nanoghost":
         if service != "gateway":
             raise HTTPException(status_code=404, detail="service not found")
-        inst = _nanoghost_instance_dir(name)
-        if not inst.exists():
-            raise HTTPException(status_code=404, detail="instance not found")
-        inst_name = inst.name
-        import subprocess
-        r = subprocess.run(f"nanoghost gateway stop -I {inst}", shell=True, capture_output=True, text=True, timeout=30)
-        out = (r.stdout or "").strip()
-        err = (r.stderr or "").strip()
-        logger.info("nanoghost gateway stop result: out=%s err=%s", out[:200], err[:200])
-        # Clear registry regardless
         reg = load_registry(REGISTRY_PATH)
         rec = _proc_record(reg, "nanoghost", name, "gateway")
+        pid = rec.get("pid")
+        if pid:
+            try:
+                import subprocess as _sp
+                _sp.run(["C:\\Windows\\System32\\taskkill.exe", "/F", "/PID", str(int(pid))],
+                        capture_output=True, timeout=5)
+            except Exception as e:
+                logger.warning("kill nanoghost gateway pid=%s: %s", pid, e)
         rec["pid"] = None
         rec["started_at"] = None
         save_registry(REGISTRY_PATH, reg)
-        if r.returncode != 0 and "not running" not in (out + err).lower():
-            # Non-fatal: log but don't error if already stopped
-            logger.warning("nanoghost gateway stop had non-zero exit: %s", err)
         return {"ok": True}
     raise HTTPException(status_code=404, detail="service not found")
 
@@ -1585,6 +1580,48 @@ def hermes_mcp_probe():
     }
 
 
+
+
+@app.post("/api/instances/nanoghost/batch/start")
+def nanoghost_batch_start():
+    """启动所有 NanoGhost 实例的 gateway"""
+    nano_root = resolve_nanoghost_root(config_path=CONFIG_PATH)
+    instances_dir = nano_root / "instances"
+    if not instances_dir.is_dir():
+        return {"ok": True, "results": {}}
+    results = {}
+    for inst_name in sorted(os.listdir(str(instances_dir))):
+        inst_dir = instances_dir / inst_name
+        if inst_dir.is_dir() and (inst_dir / ".env").exists():
+            try:
+                r = instance_service_start("nanoghost", inst_name, "gateway")
+                results[inst_name] = {"ok": True, "result": r}
+            except HTTPException as e:
+                results[inst_name] = {"ok": False, "error": e.detail}
+            except Exception as e:
+                results[inst_name] = {"ok": False, "error": str(e)}
+    return {"ok": True, "results": results}
+
+
+@app.post("/api/instances/nanoghost/batch/stop")
+def nanoghost_batch_stop():
+    """停止所有 NanoGhost 实例的 gateway"""
+    nano_root = resolve_nanoghost_root(config_path=CONFIG_PATH)
+    instances_dir = nano_root / "instances"
+    if not instances_dir.is_dir():
+        return {"ok": True, "results": {}}
+    results = {}
+    for inst_name in sorted(os.listdir(str(instances_dir))):
+        inst_dir = instances_dir / inst_name
+        if inst_dir.is_dir() and (inst_dir / ".env").exists():
+            try:
+                r = instance_service_stop("nanoghost", inst_name, "gateway")
+                results[inst_name] = {"ok": True, "result": r}
+            except HTTPException as e:
+                results[inst_name] = {"ok": False, "error": e.detail}
+            except Exception as e:
+                results[inst_name] = {"ok": False, "error": str(e)}
+    return {"ok": True, "results": results}
 @app.get("/api/nanoghost/mcp/config/raw")
 def nanoghost_mcp_config_raw_get():
     p = nanoghost_global_config_path()
@@ -1687,17 +1724,17 @@ def nanoghost_mcp_probe(instance: str | None = None):
             raise HTTPException(status_code=404, detail="instance not found")
         allow = set(read_instance_enabled_only(instance_dir=inst_dir))
 
-    targets = sorted([sid for sid, scfg in servers.items() if isinstance(scfg, dict) and scfg.get("enabled", True) is not False])
+    targets = sorted([sid for sid, scfg in servers.items() if isinstance(scfg, dict) and _mcp_server_enabled(scfg)])
     items: list[dict] = []
     for sid in targets:
         scfg = servers.get(sid) if isinstance(servers.get(sid), dict) else {}
-        enabled = bool(scfg.get("enabled", True))
+        enabled = _mcp_server_enabled(scfg)
         transport = str(scfg.get("transport") or "http_sse").strip() or "http_sse"
         url = scfg.get("url") if isinstance(scfg.get("url"), str) else None
         timeout_seconds = float(scfg.get("timeout_seconds") or 30)
 
         if allow is not None and sid not in allow:
-            items.append({"id": sid, "enabled": enabled, "transport": transport, "url": url, "ok": False, "status": "disabled_or_not_allowed", "error": None, "duration_ms": 0})
+            items.append({"id": sid, "enabled": False, "transport": transport, "url": url, "ok": False, "status": "not_allowed", "error": "not in instance allowlist", "duration_ms": 0})
             continue
         if not enabled:
             items.append({"id": sid, "enabled": enabled, "transport": transport, "url": url, "ok": False, "status": "disabled", "error": "disabled", "duration_ms": 0})
@@ -1735,10 +1772,6 @@ def nanoghost_mcp_tools_get(name: str, server_id: str):
     if not inst.exists():
         raise HTTPException(status_code=404, detail="instance not found")
 
-    allow = set(read_instance_enabled_only(instance_dir=inst))
-    if server_id not in allow:
-        raise HTTPException(status_code=400, detail="server not allowed")
-
     raw = read_nanoghost_global_config_raw()
     try:
         servers = parse_global_mcp_servers(raw)
@@ -1748,10 +1781,10 @@ def nanoghost_mcp_tools_get(name: str, server_id: str):
     scfg = servers.get(server_id)
     if not isinstance(scfg, dict):
         raise HTTPException(status_code=404, detail="server not found")
-    if scfg.get("enabled", True) is False:
+    if not _mcp_server_enabled(scfg):
         raise HTTPException(status_code=400, detail="server disabled")
     transport = str(scfg.get("transport") or "http_sse").strip() or "http_sse"
-    if transport == "http_sse":
+    if transport in ("http_sse", "sse"):
         url = scfg.get("url") if isinstance(scfg.get("url"), str) else ""
         url = url.strip()
         if not url:
@@ -1790,7 +1823,8 @@ def global_registry_skills(runtime: str):
     else:
         raise HTTPException(status_code=400, detail="openclaw not implemented")
     items = list_global_skills_runtime(shared_dir)
-    return {"ok": True, "runtime": runtime, "skills_dir": str(shared_dir), "count": len(items), "items": items}
+    group_meta = scan_group_meta(shared_dir) if runtime == "nanoghost" else {}
+    return {"ok": True, "runtime": runtime, "skills_dir": str(shared_dir), "count": len(items), "items": items, "group_meta": group_meta}
 
 
 @app.get("/api/global-registry/{runtime}/mcp/config")
@@ -2066,6 +2100,9 @@ def runtime_skills_get(name: str, runtime: str, platform: str | None = None):
             raise HTTPException(status_code=404, detail="instance not found")
         shared_dir = resolve_shared_skills_root(config_path=CONFIG_PATH)
         items = list_skills_nanoghost(inst, platform=platform, shared_dir=shared_dir)
+        group_meta: dict[str, str] = {}
+        for d in [shared_dir] if shared_dir.is_dir() else []:
+            group_meta.update(scan_group_meta(d))
         return {
             "ok": True,
             "items": [
@@ -2079,6 +2116,7 @@ def runtime_skills_get(name: str, runtime: str, platform: str | None = None):
                 }
                 for i in items
             ],
+            "group_meta": group_meta,
         }
     raise HTTPException(status_code=404, detail="runtime not found")
 
@@ -2243,11 +2281,10 @@ def ng_memory_cards_get(name: str):
         c = conn.cursor()
         # Support both old and new schema
         cols = [r[1] for r in c.execute("PRAGMA table_info(agent_memory_cards)").fetchall()]
-        if "l1_code" in cols:
-            # v3 schema: flow_hash, intent_summary, steps (json), success_count, total_rounds, experience_notes, l1_code
+        if "flow_hash" in cols:
             c.execute("""SELECT id, flow_hash, intent_summary as user_input,
                              steps_json as steps_raw, success_count, total_rounds,
-                             experience_notes, l1_code, namespace,
+                             experience_notes, namespace,
                              created_at as finished_at
                              FROM agent_memory_cards ORDER BY created_at DESC""")
         elif "session" in cols:
@@ -2257,7 +2294,7 @@ def ng_memory_cards_get(name: str):
                              FROM agent_memory_cards ORDER BY finished_at DESC""")
         else:
             c.execute("""SELECT id, intent_summary as user_input, steps_json as agent_output,
-                             total_rounds as total_steps, success_count, approved_count as approve_count,
+                             total_rounds as total_steps, success_count,
                              rejected_count as reject_count, trigger_count,
                              created_at as finished_at, pitfalls, experience_notes
                              FROM agent_memory_cards ORDER BY created_at DESC""")
@@ -2512,14 +2549,14 @@ def instance_tools_get(runtime: str, name: str):
                     scfg = all_servers.get(sid)
                     if not scfg:
                         continue
-                    if scfg.get("enabled", True) is False:
+                    if not _mcp_server_enabled(scfg):
                         continue
                     # 探测该 MCP 服务器的工具列表
                     transport = str(scfg.get("transport") or "http_sse").strip() or "http_sse"
                     tools = []
                     err = None
                     try:
-                        if transport == "http_sse":
+                        if transport in ("http_sse", "sse"):
                             url = str(scfg.get("url") or "").strip()
                             if url:
                                 headers = {str(k): str(v) for k, v in (scfg.get("headers") or {}).items() if v}
@@ -2565,6 +2602,27 @@ def instance_tools_get(runtime: str, name: str):
             except Exception:
                 pass
 
+    channels_tools: list[dict] = []
+    if runtime == "nanoghost":
+        inst = _nanoghost_instance_dir(name)
+        ch_path = inst / "channel_directory.json"
+        if ch_path.exists():
+            try:
+                ch_raw = json.loads(ch_path.read_text(encoding="utf-8"))
+                chs = ch_raw.get("channels") or {}
+                for ch_name, ch_data in chs.items():
+                    if not isinstance(ch_data, dict) or not ch_data.get("enabled"):
+                        continue
+                    if ch_name == "feishu":
+                        channels_tools.append({
+                            "channel": "feishu",
+                            "tools": [
+                                {"name": "lookup_user", "description": "查询飞书用户的详细信息（姓名、职位、邮箱、部门等）"},
+                            ],
+                        })
+            except Exception:
+                pass
+
     return {
         "ok": True,
         "runtime": runtime,
@@ -2572,5 +2630,6 @@ def instance_tools_get(runtime: str, name: str):
         "builtins": builtins,
         "mcp_servers": mcp_servers,
         "skills": skills,
+        "channels": channels_tools,
     }
 

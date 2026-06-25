@@ -30,6 +30,7 @@ _PLATFORM_MAP = {
 
 
 def _parse_frontmatter(content: str) -> tuple[dict, str]:
+    content = content.lstrip("\ufeff")
     if not content.startswith("---"):
         return {}, content
     m = _FRONTMATTER_END_RE.search(content[3:])
@@ -163,14 +164,62 @@ def set_skill_enabled(profile_dir: Path, skill_name: str, enabled: bool) -> None
     write_raw_yaml(cfg_path, rendered)
 
 
+def _load_skill_desc(skill_md: Path) -> str:
+    """读取 SKILL.md 的 description (frontmatter → body 首行)."""
+    try:
+        content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+    except OSError:
+        return ""
+    fm, body = _parse_frontmatter(content)
+    if not _skill_matches_platform(fm):
+        return ""
+    desc = str(fm.get("description") or "").strip()
+    if desc:
+        return desc
+    for line in body.strip().split("\n"):
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return line
+    return ""
+
+
+def scan_group_meta(skills_dir: Path) -> dict[str, str]:
+    """提取每个深度=1 节点的 name → description, 用作 UI 组标题描述."""
+    meta: dict[str, str] = {}
+    if not skills_dir.is_dir():
+        return meta
+    for skill_md in skills_dir.rglob("SKILL.md"):
+        try:
+            rel = skill_md.relative_to(skills_dir)
+        except ValueError:
+            continue
+        if len(rel.parts) != 2:
+            continue
+        gn = rel.parts[0]
+        if gn in meta:
+            continue
+        desc = _load_skill_desc(skill_md)
+        if desc:
+            meta[gn] = desc
+    return meta
+
+
 def _category_from_skill_md_path(skill_md: Path, skills_dir: Path) -> str | None:
+    """每个节点的 category = 最近一个也有 SKILL.md 的祖先目录名.
+    深度=1 的节点 category = 自身目录名 (自己就是一个分组)."""
     try:
         rel = skill_md.relative_to(skills_dir)
     except ValueError:
         return None
     parts = rel.parts
-    if len(parts) >= 3:
+    if len(parts) == 2:
         return parts[0]
+    # 从祖父目录开始向上找有 SKILL.md 的祖先
+    p = skill_md.parent.parent
+    while p != skills_dir:
+        if (p / "SKILL.md").is_file():
+            return p.name
+        p = p.parent
     return None
 
 
@@ -235,45 +284,7 @@ def list_skills_nanoghost(
     items: list[SkillItem] = []
     seen: set[str] = set()
 
-    # 1. 扫描实例自带的 skills/ 目录
-    local_dir = instance_dir / "skills"
-    if local_dir.is_dir():
-        for skill_md in _iter_skill_index_files(local_dir):
-            skill_dir = skill_md.parent
-            try:
-                content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
-            except OSError:
-                continue
-            fm, body = _parse_frontmatter(content)
-            if not _skill_matches_platform(fm):
-                continue
-
-            name = str(fm.get("name") or skill_dir.name).strip()
-            if not name or name in seen:
-                continue
-
-            description = str(fm.get("description") or "").strip()
-            if not description:
-                for line in body.strip().split("\n"):
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        description = line
-                        break
-
-            category = _category_from_skill_md_path(skill_md, local_dir)
-            seen.add(name)
-            items.append(
-                SkillItem(
-                    name=name,
-                    path=skill_md,
-                    enabled=name not in disabled,
-                    description=description,
-                    category=category,
-                    source="local",
-                )
-            )
-
-    # 2. 扫描共享的 ~/.agents/skills/ 目录
+    # 1. 扫共享目录（树状结构, category 正确）
     for skill_md in _iter_skill_index_files(shared_dir):
         skill_dir = skill_md.parent
         try:
@@ -283,7 +294,6 @@ def list_skills_nanoghost(
         fm, body = _parse_frontmatter(content)
         if not _skill_matches_platform(fm):
             continue
-
         name = str(fm.get("name") or skill_dir.name).strip()
         if not name or name in seen:
             continue
@@ -308,6 +318,43 @@ def list_skills_nanoghost(
                 source="external",
             )
         )
+
+    # 2. 扫实例本地 skills/（同名不跳过, 保留两份, category 按本地路径算）
+    local_dir = instance_dir / "skills"
+    if local_dir.is_dir():
+        for skill_md in _iter_skill_index_files(local_dir):
+            skill_dir = skill_md.parent
+            try:
+                content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+            except OSError:
+                continue
+            fm, body = _parse_frontmatter(content)
+            if not _skill_matches_platform(fm):
+                continue
+            name = str(fm.get("name") or skill_dir.name).strip()
+            if not name:
+                continue
+
+            description = str(fm.get("description") or "").strip()
+            if not description:
+                for line in body.strip().split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        description = line
+                        break
+
+            category = _category_from_skill_md_path(skill_md, local_dir)
+            seen.add(name)
+            items.append(
+                SkillItem(
+                    name=name,
+                    path=skill_md,
+                    enabled=name not in disabled,
+                    description=description,
+                    category=category,
+                    source="local",
+                )
+            )
 
     return items
 

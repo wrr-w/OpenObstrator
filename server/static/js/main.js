@@ -157,6 +157,42 @@ function bindActions() {
   if (globalRegistry) globalRegistry.addEventListener("click", () => window.open("/pages/global-registry", "_blank"))
   if (globalLogs) globalLogs.addEventListener("click", () => window.open("/pages/logs", "_blank"))
 
+  // Batch start/stop all NanoGhost instances
+  const batchStart = document.getElementById("batchStartAll")
+  const batchStop = document.getElementById("batchStopAll")
+
+  if (batchStart)
+    batchStart.addEventListener("click", async () => {
+      try {
+        setToast("正在启动所有实例...")
+        const r = await apiJson("/api/instances/nanoghost/batch/start", { method: "POST" })
+        const results = r.results || {}
+        const lines = Object.entries(results).map(([name, res]) =>
+          `  ${name}: ${res.ok ? "OK" : "FAIL: " + (res.error || "?")}`
+        )
+        setToast("启动完成:\n" + lines.join("\n"))
+        await refreshAllFlow()
+      } catch (e) {
+        setToast("批量启动失败: " + String(e))
+      }
+    })
+
+  if (batchStop)
+    batchStop.addEventListener("click", async () => {
+      try {
+        setToast("正在停止所有实例...")
+        const r = await apiJson("/api/instances/nanoghost/batch/stop", { method: "POST" })
+        const results = r.results || {}
+        const lines = Object.entries(results).map(([name, res]) =>
+          `  ${name}: ${res.ok ? "OK" : "FAIL: " + (res.error || "?")}`
+        )
+        setToast("停止完成:\n" + lines.join("\n"))
+        await refreshAllFlow()
+      } catch (e) {
+        setToast("批量停止失败: " + String(e))
+      }
+    })
+
   if (createBtn)
     createBtn.addEventListener("click", async () => {
       const r = await openCreateModal()

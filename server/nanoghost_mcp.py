@@ -51,6 +51,11 @@ def _is_jsonish(obj) -> bool:
     return False
 
 
+def _mcp_server_enabled(scfg: dict) -> bool:
+    enabled_val = scfg.get("enabled", True)
+    return enabled_val if isinstance(enabled_val, bool) else True
+
+
 def write_nanoghost_global_config_raw(raw: str) -> None:
     data = _validate_yaml_mapping(raw)
     if not _is_jsonish(data):
@@ -121,7 +126,7 @@ def nanoghost_mcp_config_get() -> dict:
     try:
         parsed = parse_global_mcp_servers(raw)
         for sid, scfg in parsed.items():
-            enabled = bool(scfg.get("enabled", True))
+            enabled = _mcp_server_enabled(scfg)
             transport = str(scfg.get("transport") or "http_sse").strip() or "http_sse"
             url = scfg.get("url")
             item: dict = {
@@ -209,6 +214,10 @@ def _discover_message_url(*, base_url: str, headers: dict[str, str], timeout_sec
                             endpoint = payload["endpoint"].strip()
                             if endpoint:
                                 return True, urljoin(_ensure_url(base_url), endpoint.lstrip("/")), None
+                        # 兼容裸字符串格式: data: /mcp/messages?session_id=xxx
+                        ep = data_str.strip()
+                        if ep.startswith("/"):
+                            return True, urljoin(_ensure_url(base_url), ep.lstrip("/")), None
                     if time.time() - start > max(1.0, t):
                         break
     except Exception as e:
@@ -252,16 +261,88 @@ def _post_jsonrpc(
 
 
 def list_tools_http_sse(*, url: str, headers: dict[str, str], timeout_seconds: float) -> tuple[bool, object, str | None, int]:
-    ok, msg_url, err = _discover_message_url(base_url=url, headers=headers, timeout_seconds=timeout_seconds)
-    if not ok or not msg_url:
-        return False, None, err or "discover failed", 0
-    return _post_jsonrpc(
-        message_url=msg_url,
-        headers=headers,
-        method="tools/list",
-        params={},
-        timeout_seconds=timeout_seconds,
-    )
+    t0 = time.time()
+    t = max(10.0, float(timeout_seconds))
+    http_timeout = httpx.Timeout(connect=min(5.0, t), read=t, write=t, pool=min(5.0, t))
+    tools_id = uuid.uuid4().hex
+    try:
+        with httpx.Client(timeout=http_timeout, follow_redirects=True) as client:
+            with client.stream("GET", url, headers={**headers, "Accept": "text/event-stream"}) as sse:
+                if int(sse.status_code) < 200 or int(sse.status_code) >= 400:
+                    return False, None, f"SSE HTTP {int(sse.status_code)}", int((time.time() - t0) * 1000)
+                message_url: str | None = None
+                initialized = False
+                posted_init = False
+                posted_notified = False
+                posted_list = False
+                data_lines: list[str] = []
+                deadline = time.time() + t
+                for raw in sse.iter_lines():
+                    now = time.time()
+                    if now > deadline:
+                        break
+                    if raw is None:
+                        continue
+                    line = raw.strip()
+                    if line.startswith("data:"):
+                        data_lines.append(line[5:].strip())
+                        continue
+                    if line == "":
+                        if not data_lines:
+                            continue
+                        data_str = "\n".join(data_lines).strip()
+                        data_lines.clear()
+                        if not message_url:
+                            try:
+                                payload = json.loads(data_str)
+                                if isinstance(payload, dict) and isinstance(payload.get("endpoint"), str):
+                                    ep = payload["endpoint"].strip()
+                                    if ep:
+                                        from urllib.parse import urlparse
+                                        p = urlparse(url)
+                                        message_url = f"{p.scheme}://{p.netloc}{'/' if not ep.startswith('/') else ''}{ep}"
+                            except Exception:
+                                pass
+                            if not message_url and data_str.startswith("/"):
+                                from urllib.parse import urlparse
+                                p = urlparse(url)
+                                message_url = f"{p.scheme}://{p.netloc}{data_str}"
+                        try:
+                            payload = json.loads(data_str)
+                        except Exception:
+                            payload = None
+                        if isinstance(payload, dict):
+                            resp_id = str(payload.get("id", ""))
+                            if resp_id == str(tools_id):
+                                if "result" in payload:
+                                    return True, payload["result"], None, int((now - t0) * 1000)
+                                err = payload.get("error", "unknown")
+                                return False, payload, str(err), int((now - t0) * 1000)
+                        if message_url and not posted_init:
+                            posted_init = True
+                            client.post(message_url, headers={**headers, "Content-Type": "application/json"}, json={
+                                "jsonrpc": "2.0", "id": uuid.uuid4().hex,
+                                "method": "initialize",
+                                "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "openobstrator", "version": "1.0"}}
+                            })
+                        if message_url and posted_init and not posted_notified:
+                            posted_notified = True
+                            client.post(message_url, headers={**headers, "Content-Type": "application/json"}, json={
+                                "jsonrpc": "2.0", "method": "notifications/initialized"
+                            })
+                        if message_url and posted_notified and not posted_list:
+                            posted_list = True
+                            client.post(message_url, headers={**headers, "Content-Type": "application/json"}, json={
+                                "jsonrpc": "2.0", "id": tools_id,
+                                "method": "tools/list",
+                                "params": {}
+                            })
+                dur = int((time.time() - t0) * 1000)
+                if message_url:
+                    return False, None, "no tools/list response", dur
+                return False, None, "discover failed", dur
+    except Exception as e:
+        return False, None, str(e), int((time.time() - t0) * 1000)
 
 
 @dataclass(frozen=True)
@@ -485,13 +566,13 @@ def probe_global_mcp_servers(raw: str) -> list[NanoGhostMcpProbeItem]:
     servers = parse_global_mcp_servers(raw)
     out: list[NanoGhostMcpProbeItem] = []
     for sid, scfg in servers.items():
-        enabled = bool(scfg.get("enabled", True))
+        enabled = _mcp_server_enabled(scfg)
         transport = str(scfg.get("transport") or "http_sse").strip() or "http_sse"
         url = scfg.get("url") if isinstance(scfg.get("url"), str) else None
         if not enabled:
             out.append(NanoGhostMcpProbeItem(sid, enabled, transport, url, False, "disabled", "disabled", 0))
             continue
-        if transport == "http_sse":
+        if transport in ("http_sse", "sse"):
             if not url or not url.strip():
                 out.append(NanoGhostMcpProbeItem(sid, enabled, transport, None, False, "invalid", "missing url", 0))
                 continue

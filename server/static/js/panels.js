@@ -557,7 +557,35 @@ function _updateGroupCheck(header) {
   const selAll = block.querySelector("input[type=checkbox]:first-child")
   if (!selAll) return
   const cbs = Array.from(block.querySelectorAll(".skillCb"))
-  selAll.checked = cbs.length > 0 && cbs.every(cb => cb.checked)
+  selAll.checked = cbs.length > 0 && cbs.some(cb => cb.checked)
+}
+
+function _renderSkillRow(it, cbCls, onChange) {
+  const tr = document.createElement("tr")
+  tr.dataset.skill = it.name
+  tr.dataset.skillDesc = it.description || ""
+  const n = document.createElement("td")
+  const e = document.createElement("td")
+  const ptd = document.createElement("td")
+  const nc = document.createElement("code")
+  nc.textContent = it.name
+  n.appendChild(nc)
+  const cb = document.createElement("input")
+  cb.type = "checkbox"
+  cb.className = cbCls
+  cb.checked = Boolean(it.enabled)
+  cb.dataset.skillName = it.name
+  if (onChange) cb.addEventListener("change", onChange)
+  e.appendChild(cb)
+  const desc = (it.description || "").trim()
+  const path = it.path || ""
+  ptd.textContent = desc ? `${desc}\n${path}` : path
+  ptd.style.fontSize = "12px"
+  ptd.style.color = "var(--muted)"
+  tr.appendChild(n)
+  tr.appendChild(e)
+  tr.appendChild(ptd)
+  return tr
 }
 
 async function refreshSkills() {
@@ -567,15 +595,33 @@ async function refreshSkills() {
   const body = document.getElementById("skillsBody")
   if (!body) return
   body.textContent = ""
+  const groupMeta = sk.group_meta || {}
   const groups = {}
+  const flatItems = []
   for (const it of sk.items || []) {
-    const cat = it.category ? String(it.category) : "(root)"
-    const src = it.source ? String(it.source) : "local"
-    const g = `${src} / ${cat}`
-    if (!groups[g]) groups[g] = []
-    groups[g].push(it)
+    if (it.category) {
+      const src = it.source ? String(it.source) : "local"
+      const g = `${src} / ${it.category}`
+      if (!groups[g]) groups[g] = []
+      groups[g].push(it)
+    } else {
+      flatItems.push(it)
+    }
   }
   for (const [gPath, items] of Object.entries(groups)) {
+    const cat = gPath.includes("/") ? gPath.split("/").pop().trim() : gPath
+    // 收集非父节点行
+    const rows = []
+    for (const it of items) {
+      if (cat && it.name === cat && items.length > 1) continue
+      rows.push(it)
+    }
+    // 0 行 → 跳过; 1 行 → 扁平显示; >1 行 → 折叠组
+    if (rows.length === 0) continue
+    if (rows.length === 1) {
+      flatItems.push(rows[0])
+      continue
+    }
     const block = document.createElement("div")
     block.style.marginTop = "10px"
     const header = document.createElement("div")
@@ -586,12 +632,13 @@ async function refreshSkills() {
     header.style.gap = "10px"
     header.style.padding = "4px 0"
     const arrow = document.createElement("span")
-    arrow.textContent = "\u25b6"
+    arrow.textContent = "\u25bc"
     arrow.style.fontSize = "11px"
     const label = document.createElement("span")
     label.style.fontWeight = "700"
     label.style.fontSize = "13px"
-    label.textContent = gPath
+    const groupDesc = groupMeta[cat] || ""
+    label.textContent = groupDesc ? `📁 ${gPath} — ${groupDesc}` : `📁 ${gPath}`
     const selAll = document.createElement("input")
     selAll.type = "checkbox"
     selAll.title = "全选/取消此分组"
@@ -605,48 +652,31 @@ async function refreshSkills() {
     header.appendChild(label)
     block.appendChild(header)
     const tbl = document.createElement("table")
-    tbl.style.display = "none"
     const tbdy = document.createElement("tbody")
-    let allEnabled = true
-    for (const it of items) {
-      const tr = document.createElement("tr")
-      tr.dataset.skill = it.name
-      tr.dataset.skillDesc = it.description || ""
-      const n = document.createElement("td")
-      const e = document.createElement("td")
-      const ptd = document.createElement("td")
-      const nc = document.createElement("code")
-      nc.textContent = it.name
-      n.appendChild(nc)
-      const cb = document.createElement("input")
-      cb.type = "checkbox"
-      cb.className = "skillCb"
-      cb.checked = Boolean(it.enabled)
-      cb.dataset.skillName = it.name
-      cb.addEventListener("change", () => {
-        _updateGroupCheck(header)
-      })
-      if (!cb.checked) allEnabled = false
-      e.appendChild(cb)
-      const desc = (it.description || "").trim()
-      const path = it.path || ""
-      ptd.textContent = desc ? `${desc}\n${path}` : path
-      ptd.style.fontSize = "12px"
-      ptd.style.color = "var(--muted)"
-      tr.appendChild(n)
-      tr.appendChild(e)
-      tr.appendChild(ptd)
-      tbdy.appendChild(tr)
+    const onChange = () => {
+      const cbs = Array.from(tbdy.querySelectorAll(".skillCb"))
+      selAll.checked = cbs.length > 0 && cbs.some(cb => cb.checked)
     }
-    selAll.checked = allEnabled
+    for (const it of rows) tbdy.appendChild(_renderSkillRow(it, "skillCb", onChange))
     tbl.appendChild(tbdy)
     block.appendChild(tbl)
+    onChange()
     header.addEventListener("click", (ev) => {
       if (ev.target === selAll) return
       const isOpen = tbl.style.display !== "none"
       tbl.style.display = isOpen ? "none" : ""
       arrow.textContent = isOpen ? "\u25b6" : "\u25bc"
     })
+    body.appendChild(block)
+  }
+  if (flatItems.length > 0) {
+    const block = document.createElement("div")
+    block.style.marginTop = "10px"
+    const tbl = document.createElement("table")
+    const tbdy = document.createElement("tbody")
+    for (const it of flatItems) tbdy.appendChild(_renderSkillRow(it, "skillCb"))
+    tbl.appendChild(tbdy)
+    block.appendChild(tbl)
     body.appendChild(block)
   }
 
@@ -684,10 +714,9 @@ async function refreshNanoGhostMcp() {
   body.innerHTML = '<div class="hint">加载中...</div>'
   
   try {
-    const [allowR, probeR, toolsR] = await Promise.all([
+    const [allowR, probeR] = await Promise.all([
       ngMcpAllowlistGet(name),
       ngMcpProbe(name),
-      loadTools("nanoghost", name),
     ])
     
     const enabledSet = new Set((allowR.enabled_only || []).filter(Boolean))
@@ -695,11 +724,13 @@ async function refreshNanoGhostMcp() {
     const allServers = probeR.items || []
     
     const serverActions = {}
-    for (const s of toolsR.mcp_servers || []) {
-      serverActions[s.server_id] = s.actions || []
-    }
     for (const s of allServers) {
-      if (!serverActions[s.id]) serverActions[s.id] = []
+      try {
+        const toolsR = await ngMcpTools(name, s.id)
+        serverActions[s.id] = (toolsR.tools || []).map(t => t.name || "")
+      } catch {
+        serverActions[s.id] = []
+      }
     }
     
     body.textContent = ""
@@ -732,6 +763,7 @@ async function refreshNanoGhostMcp() {
       
       const selAll = document.createElement("input")
       selAll.type = "checkbox"
+      selAll.className = "mcpMasterCb"
       selAll.title = "启用/禁用此服务器"
       selAll.checked = serverEnabled
       
@@ -761,14 +793,14 @@ async function refreshNanoGhostMcp() {
       const tbdy = document.createElement("tbody")
       
       if (actions.length > 0) {
-        selAll.addEventListener("change", () => {
-          for (const cb of Array.from(tbl.querySelectorAll(".mcpActCb"))) {
-            cb.checked = selAll.checked
-          }
-        })
-        
         const allowedSet = new Set(currentAllowed || [])
         const allEnabled = !currentAllowed
+        
+        selAll.addEventListener("change", () => {
+          for (const cb of Array.from(tbl.querySelectorAll(".mcpActCb"))) {
+            cb.checked = selAll.checked && (allEnabled || allowedSet.has(cb.dataset.actionName))
+          }
+        })
         
         for (const a of actions) {
           const tr = document.createElement("tr")
@@ -828,9 +860,9 @@ async function refreshNanoGhostMcp() {
       
       for (const block of Array.from(body.children)) {
         if (block === saveRow) continue
-        const headerCb = block.querySelector("input[type=checkbox]:first-child")
+        const headerCb = block.querySelector(".mcpMasterCb")
         if (!headerCb) continue
-        const sid = headerCb.nextElementSibling?.nextElementSibling?.textContent || ""
+        const sid = headerCb.nextElementSibling?.textContent || ""
         if (!sid) continue
         
         if (headerCb.checked) {
@@ -848,7 +880,8 @@ async function refreshNanoGhostMcp() {
       try {
         await ngMcpAllowlistPut(name, enabledServers)
         await ngMcpActionAllowlistPut(name, actionAllowlistSave)
-        setToast("MCP 已保存 ✅")
+        setToast("MCP 已保存 ✅ 需重启实例生效")
+        await refreshNanoGhostMcp()
       } catch (e) {
         setToast("保存失败: " + String(e))
       }
@@ -1036,24 +1069,47 @@ async function refreshTools() {
     }
     const builtins = r.builtins || []
     const mcp = r.mcp_servers || []
-    const total = builtins.length + mcp.length
+    const channels = r.channels || []
+    const channelToolCount = channels.reduce(function(acc, ch) { return acc + (ch.tools || []).length }, 0)
+    const total = builtins.length + mcp.length + channelToolCount
     
     let html = '<div class="card"><div class="cardHead"><div class="cardTitle">注册工具</div><span class="pill">' + total + ' 个</span></div>'
-    html += '<div class="cardBody"><table><thead><tr><th>工具名</th><th>分类</th><th>描述 / 操作</th></tr></thead><tbody>'
+    html += '<div class="cardBody"><table><thead><tr><th>工具名</th><th>来源</th><th>描述 / 操作</th></tr></thead><tbody>'
     
-    // Builtins
+    // 按 category 分组：system / skill / subagent
+    var groups = { system: [], skill: [], subagent: [] }
     for (const t of builtins) {
-      html += '<tr><td><code>' + t.name + '</code></td><td><span class="pill">' + t.category + '</span></td><td style="font-size:12px;color:var(--muted)">' + t.description + '</td></tr>'
+      var g = groups[t.category]
+      if (g) g.push(t)
+    }
+    var groupLabels = { system: '系统工具', skill: '技能工具', subagent: '子代理工具' }
+    for (const key of ['system', 'skill', 'subagent']) {
+      var items = groups[key]
+      if (!items || !items.length) continue
+      html += '<tr style="background:var(--bg2)"><td colspan="3" style="padding:6px 8px;font-weight:700;font-size:12px">' + groupLabels[key] + ' <span class="pill">' + items.length + '</span></td></tr>'
+      for (const t of items) {
+        html += '<tr><td style="padding-left:20px"><code>' + t.name + '</code></td><td><span class="pill">' + key + '</span></td><td style="font-size:12px;color:var(--muted)">' + t.description + '</td></tr>'
+      }
     }
     
-    // MCP folded
-    for (const s of mcp) {
-      const status = s.error ? '<span class="pill bad">错误</span>' : '<span class="pill ok">' + s.tools_count + ' 个</span>'
-      const actions = s.actions && s.actions.length ?
-        s.actions.map(function(a) { return '<code>' + a + '</code>'; }).join(', ') :
-        '<span class="hint">(无)</span>'
-      html += '<tr><td><code>' + s.tool_name + '</code></td><td><span class="pill">mcp</span></td><td style="font-size:12px;color:var(--muted)">' + (s.description || '') + ' ' + status + '</td></tr>'
-      if (s.error) html += '<tr><td colspan="3" style="color:var(--bad);font-size:11px">错误: ' + s.error + '</td></tr>'
+    // MCP 工具
+    if (mcp.length) {
+      html += '<tr style="background:var(--bg2)"><td colspan="3" style="padding:6px 8px;font-weight:700;font-size:12px">MCP 工具 <span class="pill">' + mcp.length + '</span></td></tr>'
+      for (const s of mcp) {
+        const status = s.error ? '<span class="pill bad">错误</span>' : '<span class="pill ok">' + s.tools_count + ' 个</span>'
+        html += '<tr><td style="padding-left:20px"><code>' + s.tool_name + '</code></td><td><span class="pill">mcp</span></td><td style="font-size:12px;color:var(--muted)">' + (s.description || '') + ' ' + status + '</td></tr>'
+        if (s.error) html += '<tr><td colspan="3" style="color:var(--bad);font-size:11px">错误: ' + s.error + '</td></tr>'
+      }
+    }
+    
+    // 频道工具
+    for (const ch of channels) {
+      var chTools = ch.tools || []
+      if (!chTools.length) continue
+      html += '<tr style="background:var(--bg2)"><td colspan="3" style="padding:6px 8px;font-weight:700;font-size:12px">' + ch.channel + ' 频道 <span class="pill">' + chTools.length + '</span></td></tr>'
+      for (const t of chTools) {
+        html += '<tr><td style="padding-left:20px"><code>' + t.name + '</code></td><td><span class="pill">' + ch.channel + '</span></td><td style="font-size:12px;color:var(--muted)">' + (t.description || '') + '</td></tr>'
+      }
     }
     
     html += '</tbody></table></div></div>'

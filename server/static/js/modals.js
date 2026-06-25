@@ -583,19 +583,59 @@ function openTemplateMgrModal(initialRuntime, initialTemplateId) {
         }
       }
 
+      function _renderRow(it, cbCls) {
+        const tr = document.createElement("tr")
+        tr.dataset.skill = it.name
+        tr.dataset.skillDesc = it.description || ""
+        const n = document.createElement("td")
+        const e = document.createElement("td")
+        const ptd = document.createElement("td")
+        const nc = document.createElement("code")
+        nc.textContent = it.name
+        n.appendChild(nc)
+        const cb = document.createElement("input")
+        cb.type = "checkbox"
+        cb.className = cbCls
+        cb.checked = Boolean(it.enabled)
+        cb.dataset.skillName = it.name
+        e.appendChild(cb)
+        const desc = (it.description || "").trim()
+        const path = it.path || ""
+        ptd.textContent = desc ? `${desc}\n${path}` : path
+        ptd.style.fontSize = "12px"
+        ptd.style.color = "var(--muted)"
+        tr.appendChild(n)
+        tr.appendChild(e)
+        tr.appendChild(ptd)
+        return tr
+      }
+
       async function refresh() {
         const sk = await templateLoadSkills(state.runtime, state.templateId)
         list.textContent = ""
+        const groupMeta = sk.group_meta || {}
         const groups = {}
+        const flatItems = []
         for (const it of sk.items || []) {
-          const cat = it.category ? String(it.category) : "(root)"
-          const src = it.source ? String(it.source) : "local"
-          const g = `${src} / ${cat}`
-          if (!groups[g]) groups[g] = []
-          groups[g].push(it)
+          if (it.category) {
+            const src = it.source ? String(it.source) : "local"
+            const g = `${src} / ${it.category}`
+            if (!groups[g]) groups[g] = []
+            groups[g].push(it)
+          } else {
+            flatItems.push(it)
+          }
         }
 
         for (const [gPath, items] of Object.entries(groups)) {
+          const cat = gPath.includes("/") ? gPath.split("/").pop().trim() : gPath
+          const rows = []
+          for (const it of items) {
+            if (cat && it.name === cat && items.length > 1) continue
+            rows.push(it)
+          }
+          if (rows.length === 0) continue
+          if (rows.length === 1) { flatItems.push(rows[0]); continue }
           const block = document.createElement("div")
           block.style.marginTop = "10px"
           const header = document.createElement("div")
@@ -606,12 +646,13 @@ function openTemplateMgrModal(initialRuntime, initialTemplateId) {
           header.style.gap = "10px"
           header.style.padding = "4px 0"
           const arrow = document.createElement("span")
-          arrow.textContent = "\u25b6"
+          arrow.textContent = "\u25bc"
           arrow.style.fontSize = "11px"
           const label = document.createElement("span")
           label.style.fontWeight = "700"
           label.style.fontSize = "13px"
-          label.textContent = gPath
+          const groupDesc = groupMeta[cat] || ""
+          label.textContent = groupDesc ? `📁 ${gPath} — ${groupDesc}` : `📁 ${gPath}`
           const selAll = document.createElement("input")
           selAll.type = "checkbox"
           selAll.title = "全选/取消此分组"
@@ -623,42 +664,33 @@ function openTemplateMgrModal(initialRuntime, initialTemplateId) {
           header.appendChild(label)
           block.appendChild(header)
           const tbl = document.createElement("table")
-          tbl.style.display = "none"
           const tbdy = document.createElement("tbody")
-          for (const it of items) {
-            const tr = document.createElement("tr")
-            tr.dataset.skill = it.name
-            tr.dataset.skillDesc = it.description || ""
-            const n = document.createElement("td")
-            const e = document.createElement("td")
-            const ptd = document.createElement("td")
-            const nc = document.createElement("code")
-            nc.textContent = it.name
-            n.appendChild(nc)
-            const cb = document.createElement("input")
-            cb.type = "checkbox"
-            cb.className = "tmplSkillCb"
-            cb.checked = Boolean(it.enabled)
-            cb.dataset.skillName = it.name
-            e.appendChild(cb)
-            const desc = (it.description || "").trim()
-            const path = it.path || ""
-            ptd.textContent = desc ? `${desc}\n${path}` : path
-            ptd.style.fontSize = "12px"
-            ptd.style.color = "var(--muted)"
-            tr.appendChild(n)
-            tr.appendChild(e)
-            tr.appendChild(ptd)
+          const cbs = []
+          for (const it of rows) {
+            const tr = _renderRow(it, "tmplSkillCb")
             tbdy.appendChild(tr)
           }
           tbl.appendChild(tbdy)
           block.appendChild(tbl)
+          const ckbs = Array.from(tbdy.querySelectorAll(".tmplSkillCb"))
+          selAll.checked = ckbs.length > 0 && ckbs.some(cb => cb.checked)
           header.addEventListener("click", (ev) => {
             if (ev.target === selAll) return
             const isOpen = tbl.style.display !== "none"
             tbl.style.display = isOpen ? "none" : ""
             arrow.textContent = isOpen ? "\u25b6" : "\u25bc"
           })
+          list.appendChild(block)
+        }
+        // 平铺 skill 直出
+        if (flatItems.length > 0) {
+          const block = document.createElement("div")
+          block.style.marginTop = "10px"
+          const tbl = document.createElement("table")
+          const tbdy = document.createElement("tbody")
+          for (const it of flatItems) tbdy.appendChild(_renderRow(it, "tmplSkillCb"))
+          tbl.appendChild(tbdy)
+          block.appendChild(tbl)
           list.appendChild(block)
         }
         applyFilter()
