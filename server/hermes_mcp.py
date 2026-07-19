@@ -142,7 +142,7 @@ def _probe_http_url(*, url: str, headers: dict[str, str], timeout_seconds: float
     t = max(0.2, float(timeout_seconds))
     timeout = httpx.Timeout(connect=t, read=t, write=t, pool=t)
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=False) as client:
             with client.stream("GET", url, headers=headers) as r:
                 code = int(r.status_code)
                 return True, code, None

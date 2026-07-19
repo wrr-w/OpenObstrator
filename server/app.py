@@ -82,7 +82,7 @@ if getattr(sys, 'frozen', False) and _EMBEDDED_DATA_DIR.is_dir():
 CONFIG_PATH = DATA_DIR / "config.yaml"
 REGISTRY_PATH = DATA_DIR / "registry.json"
 
-SERVICE_HOST = "127.0.0.1"
+SERVICE_HOST = load_app_config(CONFIG_PATH).bind_host
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -1739,7 +1739,7 @@ def nanoghost_mcp_probe(instance: str | None = None):
         if not enabled:
             items.append({"id": sid, "enabled": enabled, "transport": transport, "url": url, "ok": False, "status": "disabled", "error": "disabled", "duration_ms": 0})
             continue
-        if transport == "http_sse":
+        if transport in ("http_sse", "sse"):
             if not url or not url.strip():
                 items.append({"id": sid, "enabled": enabled, "transport": transport, "url": None, "ok": False, "status": "invalid", "error": "missing url", "duration_ms": 0})
                 continue
@@ -2433,15 +2433,61 @@ def ng_memory_graph_get(name: str, level: int = Query(2, ge=1, le=4)):
         has_edges = bool(c.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_memory_edges'"
         ).fetchone())
+        has_ml_edges = False
+        if not has_edges:
+            has_ml_edges = bool(c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_edges_ml'"
+            ).fetchone())
         if has_edges:
             c.execute("""SELECT from_method, from_path, to_method, to_path,
                          total_count FROM agent_memory_edges""")
             rows = [dict(r) for r in c.fetchall()]
+            rows_ml = []
+        elif has_ml_edges:
+            c.execute("SELECT level, from_code, to_code, total_count FROM agent_edges_ml WHERE level=?", (int(level),))
+            rows_ml = [dict(r) for r in c.fetchall()]
+            rows = []
         else:
             rows = []
+            rows_ml = []
         conn.close()
-        if not rows:
+        if not rows and not rows_ml:
             return {"ok": True, "nodes": [], "edges": []}
+
+        if rows_ml:
+            import hashlib
+
+            def _ml_label(code: int) -> str:
+                if level == 1:
+                    return f"L1:{int(code) & 0xFFFF:04x}"
+                return f"L{int(level)}:{int(code) & 0xFFFFFFFF:08x}"
+
+            def _sid(s):
+                return "n" + hashlib.md5(s.encode()).hexdigest()[:12]
+
+            edge_map = {}
+            for r in rows_ml:
+                fk = _ml_label(r.get("from_code") or 0)
+                tk = _ml_label(r.get("to_code") or 0)
+                if not fk or not tk:
+                    continue
+                if fk == tk:
+                    continue
+                key = (fk, tk)
+                edge_map[key] = edge_map.get(key, 0) + int(r.get("total_count") or 1)
+
+            if not edge_map:
+                return {"ok": True, "nodes": [], "edges": [], "level": level}
+
+            nodes, edges = {}, []
+            for (fk, tk), cnt in sorted(edge_map.items(), key=lambda x: -x[1]):
+                fid, tid = _sid(fk), _sid(tk)
+                if fid not in nodes:
+                    nodes[fid] = {"id": fid, "label": fk}
+                if tid not in nodes:
+                    nodes[tid] = {"id": tid, "label": tk}
+                edges.append({"from": fid, "to": tid, "label": "x" + str(cnt), "total_count": cnt})
+            return {"ok": True, "nodes": list(nodes.values()), "edges": edges, "level": level}
 
         def _first_cmd(path):
             p = (path or "").strip()

@@ -168,8 +168,8 @@ def _probe_http_sse(*, url: str, headers: dict[str, str], timeout_seconds: float
     t = max(0.2, float(timeout_seconds))
     timeout = httpx.Timeout(connect=min(5.0, t), read=t, write=t, pool=min(5.0, t))
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            with client.stream("GET", _sse_url(url), headers={**headers, "Accept": "text/event-stream"}) as r:
+        with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+            with client.stream("GET", url, headers={**headers, "Accept": "text/event-stream"}) as r:
                 if int(r.status_code) < 200 or int(r.status_code) >= 400:
                     dur = int((time.time() - t0) * 1000)
                     return False, "bad_status", f"status {int(r.status_code)}", dur
@@ -189,7 +189,7 @@ def _discover_message_url(*, base_url: str, headers: dict[str, str], timeout_sec
     timeout = httpx.Timeout(connect=min(5.0, t), read=t, write=t, pool=min(5.0, t))
     data_lines: list[str] = []
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=False) as client:
             with client.stream("GET", _sse_url(base_url), headers={**headers, "Accept": "text/event-stream"}) as r:
                 if int(r.status_code) < 200 or int(r.status_code) >= 400:
                     return False, None, f"status {int(r.status_code)}"
@@ -243,7 +243,7 @@ def _post_jsonrpc(
     timeout = httpx.Timeout(connect=min(5.0, t), read=t, write=t, pool=min(5.0, t))
     payload = {"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": method, "params": params or {}}
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=False) as client:
             r = client.post(message_url, headers={**headers, "Content-Type": "application/json"}, json=payload)
             data = r.json() if (r.text or "").strip() else {}
     except Exception as e:
@@ -266,7 +266,7 @@ def list_tools_http_sse(*, url: str, headers: dict[str, str], timeout_seconds: f
     http_timeout = httpx.Timeout(connect=min(5.0, t), read=t, write=t, pool=min(5.0, t))
     tools_id = uuid.uuid4().hex
     try:
-        with httpx.Client(timeout=http_timeout, follow_redirects=True) as client:
+        with httpx.Client(timeout=http_timeout, follow_redirects=True, trust_env=False) as client:
             with client.stream("GET", url, headers={**headers, "Accept": "text/event-stream"}) as sse:
                 if int(sse.status_code) < 200 or int(sse.status_code) >= 400:
                     return False, None, f"SSE HTTP {int(sse.status_code)}", int((time.time() - t0) * 1000)

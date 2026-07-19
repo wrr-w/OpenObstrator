@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "iwms": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8001/mcp/sse"
+    },
+    "capture": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8000/mcp/sse"
+    }
+  }
+}

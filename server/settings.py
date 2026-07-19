@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +26,29 @@ class AppConfig:
     bind_port: int = 8088
 
 
+_SERVER_JSON_NAME = "openobstrator.server.json"
+
+
+def _locate_server_json(config_path: Path) -> Path | None:
+    exe_dir = Path(sys.executable).parent if getattr(sys, 'frozen', False) else None
+    candidates = [
+        exe_dir / _SERVER_JSON_NAME if exe_dir else None,
+        config_path.parent.parent / _SERVER_JSON_NAME,
+        config_path.parent / _SERVER_JSON_NAME,
+    ]
+    for p in candidates:
+        if p and p.exists():
+            return p
+    return None
+
+
+def _load_server_json(config_path: Path) -> dict:
+    path = _locate_server_json(config_path)
+    if path:
+        return json.loads(path.read_text(encoding="utf-8"))
+    return {}
+
+
 def load_app_config(config_path: Path) -> AppConfig:
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
     if not isinstance(raw, dict):
@@ -44,14 +69,18 @@ def load_app_config(config_path: Path) -> AppConfig:
     shared_skills_root = raw.get("shared_skills_root")
     shared_skills_root = str(shared_skills_root) if shared_skills_root not in (None, "", "null") else None
 
+    sj = _load_server_json(config_path)
+    bind_host = str(sj.get("host") or raw.get("bind_host") or "127.0.0.1")
+    bind_port = int(sj.get("port") or raw.get("bind_port") or 8088)
+
     return AppConfig(
         hermes_root=hermes_root,
         nanoghost_root=nanoghost_root,
         openclaw_root=openclaw_root,
         shared_skills_root=shared_skills_root,
         port_alloc=port_alloc,
-        bind_host=str(raw.get("bind_host") or "127.0.0.1"),
-        bind_port=int(raw.get("bind_port") or 8088),
+        bind_host=bind_host,
+        bind_port=bind_port,
     )
 
 

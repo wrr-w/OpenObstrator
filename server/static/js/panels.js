@@ -724,13 +724,12 @@ async function refreshNanoGhostMcp() {
     const allServers = probeR.items || []
     
     const serverActions = {}
-    for (const s of allServers) {
-      try {
-        const toolsR = await ngMcpTools(name, s.id)
-        serverActions[s.id] = (toolsR.tools || []).map(t => t.name || "")
-      } catch {
-        serverActions[s.id] = []
-      }
+    const toolResults = await Promise.all(allServers.map(s =>
+      ngMcpTools(name, s.id).then(r => ({ id: s.id, tools: (r.tools || []).map(t => t.name || "") }))
+        .catch(() => ({ id: s.id, tools: [] }))
+    ))
+    for (const { id, tools } of toolResults) {
+      serverActions[id] = tools
     }
     
     body.textContent = ""

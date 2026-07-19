@@ -10,6 +10,9 @@ __pycache__/
 data/config.yaml
 data/registry.json
 
+# server host/port config (per-machine)
+openobstrator.server.json
+
 # instance specific data
 data/nanoghost/instances/*/
 
