@@ -26,6 +26,7 @@ node_modules/
 build/
 dist/
 dist.7z
+dist_data_bak/
 *.bak
 server/static/g6.min.js
 

@@ -1,0 +1,10 @@
+# OpenObstrator 首次安装时的默认配置（装到 {app}\data\config.yaml）。
+# 只写"未指定"的占位，让程序按各自默认去解析（如 ~/.nanoghost、~/.hermes）。
+# 升级安装不会覆盖用户改过的这份配置（见 installer.iss 的 onlyifdoesntexist）。
+hermes_root: null
+nanoghost_root: null
+openclaw_root: null
+shared_skills_root: null
+port_alloc:
+  gateway_start: 19000
+  gateway_end: 19999
