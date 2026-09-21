@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -15,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from server.configfile import read_raw_yaml, write_raw_yaml
+from server.configfile import read_raw_yaml, validate_yaml_mapping, write_raw_yaml
 from server.envfile import delete_env_key, parse_env_keys, set_env_kv
 from server.hermes_mcp import hermes_config_path
 from server.hermes_mcp import hermes_mcp_config_get as hermes_mcp_config_summary
@@ -43,7 +44,9 @@ from server.registry import load_registry, save_registry
 from server.soulfile import read_raw_text, write_raw_text
 from server.skills import list_global_skills_runtime
 from server.skills import list_skills, list_skills_nanoghost, scan_group_meta, set_skill_enabled, set_skill_enabled_nanoghost
+from server import nanoghost_upgrade
 from server.settings import load_app_config
+from server.settings import locate_nanoghost_program
 from server.settings import resolve_hermes_root
 from server.settings import resolve_nanoghost_root
 from server.settings import resolve_openclaw_root
@@ -155,6 +158,15 @@ class ExportTemplateBody(BaseModel):
 
 class InstanceRenameBody(BaseModel):
     new_name: str
+
+
+class NanoGhostUpgradeStartBody(BaseModel):
+    restart: bool = True
+
+
+class NanoGhostProgramBody(BaseModel):
+    # 空字符串 = 清掉显式覆盖，回到自动解析
+    path: str = ""
 
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -735,19 +747,38 @@ def _nanoghost_repo_dir() -> Path:
     raise HTTPException(status_code=500, detail=f"NanoGhost repo not found (APP_ROOT={APP_ROOT})")
 
 
-def _nanoghost_run_py() -> Path:
-    return _nanoghost_repo_dir() / "run.py"
+def _locate_nanoghost_program() -> tuple[Path | None, str]:
+    """定位 NanoGhost 程序，返回 (路径, 来源标记)。
+
+    **启动哪个程序** 和 **升级覆盖哪个程序** 必须是同一个答案，这个函数就是那个
+    唯一答案。分开的后果是最难查的一类故障：点完更新、重启后还是旧版本，而且没有
+    任何报错 —— 因为控制台压根没启动被更新的那个程序。
+
+    _nanoghost_repo_dir() 在找不到源码仓库时抛 HTTPException(500)。那只影响"源码
+    dist"这一级：只有安装版、没有源码仓库的机器照样能解析出安装目录的 exe，所以这里
+    吞掉它，只把 repo_dir 降级为 None。
+
+    配置显式指了 nanoghost_program 却指不到文件时，**不能**静默退回下一级 —— 用户
+    改了配置却看到行为没变，会以为配置生效了，比直接报错难查得多。转成 400 让界面
+    能直接显示原因。
+    """
+    repo_dir = None
+    try:
+        repo_dir = _nanoghost_repo_dir()
+    except HTTPException:
+        pass
+    try:
+        return locate_nanoghost_program(config_path=CONFIG_PATH, repo_dir=repo_dir)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-def _nanoghost_python() -> str:
-    """Resolve NanoGhost's own venv Python instead of sys.executable."""
-    repo = _nanoghost_repo_dir()
-    for venv_dir in ("venv", ".venv"):
-        cand = repo / venv_dir / "Scripts" / "python.exe"
-        if cand.is_file():
-            return str(cand)
-    import sys
-    return sys.executable
+def _nanoghost_program() -> Path | None:
+    """只要路径的简写形式。None 表示本机没有 NanoGhost（合法状态，不是错误）。"""
+    return _locate_nanoghost_program()[0]
+
+
+_NANOGHOST_PROGRAM_HINT = "找不到 NanoGhost 程序，请先安装或配置 nanoghost_program"
 
 
 def _nanoghost_instance_dir(name: str) -> Path:
@@ -1339,7 +1370,10 @@ def instance_service_start(runtime: str, name: str, service: str):
         port = int(rec["port"])
         # Start NanoGhost exe as gateway
         import subprocess as _sp
-        _nano_exe = _nanoghost_repo_dir() / "dist" / "NanoGhost" / "NanoGhost.exe"
+        # 走统一解析器，不猜 dist/ —— 见 _locate_nanoghost_program() 的说明
+        _nano_exe = _nanoghost_program()
+        if _nano_exe is None:
+            raise HTTPException(status_code=400, detail=_NANOGHOST_PROGRAM_HINT)
         _env = dict(os.environ)
         _env["NANOGHOST_CALLER"] = "openobstrator"
         sr = _sp.Popen(
@@ -1822,7 +1856,8 @@ def global_registry_skills(runtime: str):
         shared_dir = resolve_hermes_root(config_path=CONFIG_PATH) / "skills"
     else:
         raise HTTPException(status_code=400, detail="openclaw not implemented")
-    items = list_global_skills_runtime(shared_dir)
+    # 平台过滤只有 hermes 那条路有（NanoGhost 不认 platforms:），见函数 docstring
+    items = list_global_skills_runtime(shared_dir, apply_platform_filter=(runtime == "hermes"))
     group_meta = scan_group_meta(shared_dir) if runtime == "nanoghost" else {}
     return {"ok": True, "runtime": runtime, "skills_dir": str(shared_dir), "count": len(items), "items": items, "group_meta": group_meta}
 
@@ -1933,8 +1968,7 @@ def runtime_instance_create(runtime: str, body: RuntimeInstanceCreateBody):
         return {"ok": True, "name": name, "path": str(profile_dir)}
     if runtime == "nanoghost":
         root = resolve_nanoghost_root(config_path=CONFIG_PATH)
-        if not root.exists():
-            raise HTTPException(status_code=400, detail="nanoghost_root does not exist")
+        root.mkdir(parents=True, exist_ok=True)
 
         instances_root = root / "instances"
         instances_root.mkdir(parents=True, exist_ok=True)
@@ -1943,35 +1977,33 @@ def runtime_instance_create(runtime: str, body: RuntimeInstanceCreateBody):
         if inst.exists():
             raise HTTPException(status_code=409, detail="instance already exists")
 
+        nano_exe = _nanoghost_repo_dir() / "dist" / "NanoGhost" / "NanoGhost.exe"
+        r = subprocess.run(
+            [str(nano_exe), "instance", "create", name],
+            capture_output=True, text=True, errors="replace",
+            timeout=15,
+        )
+        if r.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"instance create failed: {r.stderr.strip()}")
+
         tpl_dir = _template_dir("nanoghost", body.template_id)
-        try:
-            clone_template_dir(template_dir=tpl_dir, dest_dir=inst, exclude_names={"instances", "templates"})
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        except FileExistsError as e:
-            raise HTTPException(status_code=409, detail=str(e)) from e
-        except OSError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        default_tpl = _template_dir("nanoghost", None)
+        if tpl_dir != default_tpl:
+            try:
+                for entry in tpl_dir.iterdir():
+                    if entry.name == ".env":
+                        continue
+                    target = inst / entry.name
+                    if entry.is_dir():
+                        if not target.exists():
+                            shutil.copytree(entry, target)
+                    elif entry.is_file():
+                        if not target.exists():
+                            shutil.copy2(entry, target)
+            except OSError as e:
+                raise HTTPException(status_code=500, detail=str(e)) from e
 
-        for sub in ["data", "work", "prompts", "skills", "skills.disabled"]:
-            (inst / sub).mkdir(parents=True, exist_ok=True)
-
-        env_path = inst / ".env"
-        if not env_path.exists():
-            src_env = _nanoghost_repo_dir() / ".env" if _nanoghost_repo_dir() else None
-            if src_env and src_env.is_file():
-                env_path.write_text(src_env.read_text(encoding="utf-8"), encoding="utf-8")
-            else:
-                env_path.write_text("", encoding="utf-8")
-
-        prompts_dir = inst / "prompts"
-        src_prompts = (_nanoghost_repo_dir() / "prompts") if _nanoghost_repo_dir() else None
-        if src_prompts and src_prompts.is_dir():
-            for f in src_prompts.iterdir():
-                if f.is_file() and f.suffix == ".md":
-                    dest = prompts_dir / f.name
-                    if not dest.exists():
-                        dest.write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
+        (inst / "skills.disabled").mkdir(parents=True, exist_ok=True)
 
         return {"ok": True, "name": name, "path": str(inst)}
     if runtime == "openclaw":
@@ -2140,6 +2172,167 @@ def runtime_skills_batch_put(name: str, runtime: str, body: SkillBatchPutBody):
     raise HTTPException(status_code=404, detail="runtime not found")
 
 
+# ---------------------------------------------------------------------------
+# nanoghost 通道进程槽
+# ---------------------------------------------------------------------------
+#
+# 飞书不是一个"控制台自己起的进程" —— 它是 **gateway 孵出来的 worker**
+# （gateway_server.py 的 CHANNEL_REGISTRY：feishu 有 worker_key，cli 没有）。
+# gateway 启动时读 <实例>/channel_directory.json，把里面 enabled 的通道孵出来，
+# 之后每 30 秒体检一次，死了重孵。
+#
+# 所以这三个接口的正确语义是"操作 gateway"，而不是"起一个进程"：
+#   start  → 把 enabled 写 true，让 gateway 去孵（gateway 没跑就先起 gateway）
+#   stop   → 把 enabled 写 false，并让 gateway 停掉 worker
+#   status → 读 gateway 的 /api/status
+#
+# 改造前它们是直接 `python run.py` + AGENT_MODE=feishu 起独立进程，等于对同一个
+# 机器人开**第二条** WebSocket 长连接：gateway 不知道它存在，它也不受体检保护。
+#
+# 顺带一提：这三个接口目前**没有任何前端调用**（Channels 面板走的是另一套
+# /api/instances/.../channels 接口），所以这次是纯后端行为修正，不会再改出别的
+# 问题来。
+
+
+def _set_channel_enabled(inst: Path, channel: str, enabled: bool) -> Path:
+    """改 <实例>/channel_directory.json 里的 channels.<channel>.enabled。
+
+    刻意写**同一个文件**：Channels 面板（instance_channels_put）和 gateway
+    （gateway_server.py:47 的 channel_config_path）用的都是它，所以"启用飞书"
+    这条链路本来就已经存在且能用，不需要另造一条。
+    """
+    ch_path = inst / "channel_directory.json"
+    if ch_path.exists():
+        try:
+            cfg = json.loads(ch_path.read_text(encoding="utf-8"))
+        except Exception:
+            cfg = {}
+    else:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    channels = cfg.get("channels")
+    if not isinstance(channels, dict):
+        channels = {}
+        cfg["channels"] = channels
+    entry = channels.get(channel)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["enabled"] = bool(enabled)
+    channels[channel] = entry
+    cfg["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    tmp = ch_path.with_suffix(ch_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(ch_path)
+    return ch_path
+
+
+def _gateway_running(rec: dict) -> bool:
+    return bool(rec.get("pid")) and is_pid_running(int(rec["pid"]))
+
+
+def _gateway_http(rec: dict, method: str, path: str, timeout: float = 8.0) -> dict:
+    """调本机 gateway 的 HTTP 接口。
+
+    trust_env=False：这是本机回环调用，不能因为环境里有个 HTTP_PROXY 就绕出去。
+    """
+    import httpx
+
+    port = rec.get("port")
+    if port in (None, "", 0):
+        raise HTTPException(status_code=400, detail="这个实例的 gateway 还没有分配端口，先启动 gateway")
+    url = f"http://{SERVICE_HOST}:{int(port)}{path}"
+    try:
+        with httpx.Client(timeout=httpx.Timeout(timeout), trust_env=False) as c:
+            r = c.request(method, url)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"连不上 gateway（{url}）：{e}")
+    if r.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"gateway 返回 {r.status_code}：{r.text[:200]}")
+    try:
+        return r.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail=f"gateway 返回的不是 JSON：{r.text[:200]}")
+
+
+def _nanoghost_feishu_start(name: str) -> dict:
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    _set_channel_enabled(inst, "feishu", True)
+
+    reg = load_registry(REGISTRY_PATH)
+    rec = _proc_record(reg, "nanoghost", name, "gateway")
+    if not _gateway_running(rec):
+        # gateway 没在跑：把它拉起来就够了 —— 它启动时会自己读
+        # channel_directory.json 并孵化 feishu worker，不需要再单独做一步。
+        started = instance_service_start("nanoghost", name, "gateway")
+        return {
+            "ok": True,
+            "via": "gateway-started",
+            "gateway": started,
+            "detail": "gateway 已启动，它会按配置孵化飞书 worker（可能需要几秒）",
+        }
+    out = _gateway_http(rec, "POST", "/api/start")
+    return {"ok": True, "via": "gateway", "gateway": _status_for_record(rec),
+            "workers": out.get("workers")}
+
+
+def _nanoghost_feishu_stop(name: str) -> dict:
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+    _set_channel_enabled(inst, "feishu", False)
+
+    reg = load_registry(REGISTRY_PATH)
+    rec = _proc_record(reg, "nanoghost", name, "gateway")
+    if not _gateway_running(rec):
+        return {"ok": True, "via": "config-only",
+                "detail": "gateway 没在跑，只改了配置；下次启动它就不会再孵飞书 worker"}
+    # gateway 的 POST /api/stop 就是 StopFeishu（gateway_server.py:352）。
+    # 这里不用 /api/start：那条是对**所有**通道按配置启停，会顺带碰别的通道。
+    out = _gateway_http(rec, "POST", "/api/stop")
+    return {"ok": True, "via": "gateway", "workers": out.get("workers")}
+
+
+def _nanoghost_feishu_status(name: str) -> dict:
+    inst = _nanoghost_instance_dir(name)
+    if not inst.exists():
+        raise HTTPException(status_code=404, detail="instance not found")
+
+    enabled = False
+    ch_path = inst / "channel_directory.json"
+    if ch_path.exists():
+        try:
+            cfg = json.loads(ch_path.read_text(encoding="utf-8"))
+            ch = (cfg.get("channels") or {}).get("feishu")
+            if isinstance(ch, dict):
+                enabled = bool(ch.get("enabled"))
+        except Exception:
+            pass
+
+    reg = load_registry(REGISTRY_PATH)
+    rec = _proc_record(reg, "nanoghost", name, "gateway")
+    base = _status_for_record(rec)
+    out = {"ok": True, **base, "enabled": enabled, "workers": None, "detail": ""}
+    if not base["running"]:
+        out["detail"] = "gateway 没在跑，飞书也就没在跑"
+        return out
+    try:
+        workers = _gateway_http(rec, "GET", "/api/status").get("workers") or {}
+    except HTTPException as e:
+        # gateway 进程在、端口不通（刚起、或正在崩）—— 如实说，不要猜
+        out["detail"] = getattr(e, "detail", None) or str(e)
+        return out
+    out["workers"] = workers
+    feishu = workers.get("feishu") if isinstance(workers, dict) else None
+    if isinstance(feishu, dict):
+        out["running"] = bool(feishu.get("running"))
+        out["worker_pid"] = feishu.get("pid")
+        out["enabled"] = bool(feishu.get("enabled", enabled))
+    return out
+
+
 @app.post("/api/runtimes/{runtime}/instances/{name}/processes/{proc}/start")
 def runtime_process_start(runtime: str, name: str, proc: str):
     runtime = (runtime or "").strip().lower()
@@ -2150,40 +2343,12 @@ def runtime_process_start(runtime: str, name: str, proc: str):
             return gateway_start(name)
         raise HTTPException(status_code=404, detail="process not found")
     if runtime == "nanoghost":
-        if proc not in ("cli", "feishu"):
+        # cli 槽下线：NanoGhost 的 CHANNEL_REGISTRY 里 cli **没有** worker_key，
+        # 它本质就是终端（run.py:578 的 run_cli_chat），无终端时 input() 立刻
+        # EOFError 退出，托管不了。
+        if proc != "feishu":
             raise HTTPException(status_code=404, detail="process not found")
-        inst = _nanoghost_instance_dir(name)
-        if not inst.exists():
-            raise HTTPException(status_code=404, detail="instance not found")
-        run_py = _nanoghost_run_py()
-        reg = load_registry(REGISTRY_PATH)
-        rec = _proc_record(reg, "nanoghost", name, proc)
-        if rec.get("pid") and is_pid_running(int(rec["pid"])):
-            logger.info("nanoghost %s/%s already running (pid %s)", name, proc, rec["pid"])
-            return {"ok": True, **_status_for_record(rec)}
-        env = dict(os.environ)
-        env["INSTANCE_DIR"] = str(inst)
-        env_path = inst / ".env"
-        keys = parse_env_keys(env_path)
-        for k, v in keys.items():
-            vv = (v or "").strip()
-            if not vv:
-                continue
-            if len(vv) >= 2 and vv[0] == vv[-1] and vv[0] in ('"', "'", "`"):
-                vv = vv[1:-1].strip()
-            env[k] = vv
-        if proc == "feishu":
-            env["AGENT_MODE"] = "feishu"
-        else:
-            env.pop("AGENT_MODE", None)
-        argv = [_nanoghost_python(), str(run_py), "-I", str(inst)]
-        logger.info("starting nanoghost %s/%s argv=%s", name, proc, " ".join(argv))
-        sr = spawn_logged(argv, cwd=str(run_py.parent), env=env, tag=f"ng-{proc}-{name}")
-        logger.info("nanoghost %s/%s pid=%s", name, proc, sr.pid)
-        rec["pid"] = sr.pid
-        rec["started_at"] = int(time.time())
-        save_registry(REGISTRY_PATH, reg)
-        return {"ok": True, **_status_for_record(rec), "argv": argv}
+        return _nanoghost_feishu_start(name)
     raise HTTPException(status_code=404, detail="runtime not found")
 
 
@@ -2197,18 +2362,10 @@ def runtime_process_stop(runtime: str, name: str, proc: str):
             return gateway_stop(name)
         raise HTTPException(status_code=404, detail="process not found")
     if runtime == "nanoghost":
-        if proc not in ("cli", "feishu"):
+        # 见 runtime_process_start 上方：cli 槽下线，只剩 feishu
+        if proc != "feishu":
             raise HTTPException(status_code=404, detail="process not found")
-        reg = load_registry(REGISTRY_PATH)
-        rec = _proc_record(reg, "nanoghost", name, proc)
-        pid = rec.get("pid")
-        if not pid:
-            return {"ok": False, "error": "no pid recorded"}
-        kill_pid_tree(int(pid))
-        rec["pid"] = None
-        rec["started_at"] = None
-        save_registry(REGISTRY_PATH, reg)
-        return {"ok": True}
+        return _nanoghost_feishu_stop(name)
     raise HTTPException(status_code=404, detail="runtime not found")
 
 
@@ -2222,17 +2379,16 @@ def runtime_process_status(runtime: str, name: str, proc: str):
             return gateway_status(name)
         raise HTTPException(status_code=404, detail="process not found")
     if runtime == "nanoghost":
-        if proc not in ("cli", "feishu"):
+        # 见 runtime_process_start 上方：cli 槽下线，只剩 feishu
+        if proc != "feishu":
             raise HTTPException(status_code=404, detail="process not found")
         reg = load_registry(REGISTRY_PATH)
-        rec = _proc_record(reg, "nanoghost", name, proc)
-        status = _status_for_record(rec)
-        if status["pid"] and not status["pid_running"]:
+        rec = _proc_record(reg, "nanoghost", name, "gateway")
+        if rec.get("pid") and not is_pid_running(int(rec["pid"])):
             rec["pid"] = None
             rec["started_at"] = None
             save_registry(REGISTRY_PATH, reg)
-            status = _status_for_record(rec)
-        return {"ok": True, **status}
+        return _nanoghost_feishu_status(name)
     raise HTTPException(status_code=404, detail="runtime not found")
 
 
@@ -2678,4 +2834,122 @@ def instance_tools_get(runtime: str, name: str):
         "skills": skills,
         "channels": channels_tools,
     }
+
+
+# ---------------------------------------------------------------------------
+# NanoGhost 升级 / 安装
+# ---------------------------------------------------------------------------
+#
+# 编排在 server/nanoghost_upgrade.py 里，这里只挂路由，并把它需要的两样东西注入
+# 进去 —— 那个模块不能 import 本模块（本模块要 import 它来挂路由，直接 import
+# 会成环）。
+
+nanoghost_upgrade.configure(
+    config_path=CONFIG_PATH,
+    registry_path=REGISTRY_PATH,
+    data_dir=DATA_DIR,
+    locate_program=_locate_nanoghost_program,
+    service_start=instance_service_start,
+)
+
+
+@app.get("/api/nanoghost/update/info")
+def nanoghost_update_info():
+    """弹窗打开时的第一个调用。
+
+    **快、且不打网络**：只做本地路径解析 + `--version`。最新版本号来自上一次
+    查询的缓存，没有就是空的 —— 为了显示一个数字让弹窗卡十几秒是最差的取舍。
+    """
+    return nanoghost_upgrade.info()
+
+
+@app.get("/api/nanoghost/update/check")
+def nanoghost_update_check(force: bool = Query(default=False)):
+    """查最新 release（**要打网络**，所以单独一条）。
+
+    info() 里刻意不查，所以界面上的「检查更新」按钮走这里。轮询不要带 force ——
+    GitHub 未登录的 API 每小时只有 60 次。
+    """
+    try:
+        return nanoghost_upgrade.check_latest(force=force)
+    except nanoghost_upgrade.UpgradeError as e:
+        # 502：上游（GitHub）的问题，不是请求本身错了。界面要能区分这两种。
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/nanoghost/update/status")
+def nanoghost_update_status():
+    return nanoghost_upgrade.status()
+
+
+@app.post("/api/nanoghost/update/start")
+def nanoghost_update_start(body: NanoGhostUpgradeStartBody | None = None):
+    return _start_nanoghost_upgrade("update", body)
+
+
+@app.post("/api/nanoghost/install/start")
+def nanoghost_install_start(body: NanoGhostUpgradeStartBody | None = None):
+    return _start_nanoghost_upgrade("install", body)
+
+
+def _start_nanoghost_upgrade(mode: str, body: NanoGhostUpgradeStartBody | None) -> dict:
+    restart = True if body is None else bool(body.restart)
+    try:
+        return nanoghost_upgrade.start(mode, restart=restart)
+    except nanoghost_upgrade.UpgradeBusy as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except nanoghost_upgrade.UpgradeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/nanoghost/update/program")
+def nanoghost_update_program_put(body: NanoGhostProgramBody):
+    """显式指定 NanoGhost 程序路径（写进 config.yaml 的 nanoghost_program）。
+
+    path 传空字符串就是清掉覆盖、回到自动解析。
+
+    这里是**逐行改**而不是 safe_load 之后再 dump 回去：后者会把 config.yaml 里的
+    注释全部丢掉，而那份文件是给人看、给人改的。
+    """
+    value = (body.path or "").strip()
+    # 先验后写。反过来（写进去再解析、解析不成再报错）会把一条走不通的路径**留在
+    # 配置文件里** —— 用户看到的是"写入失败"，然后发现控制台连程序都找不到了。
+    # 一次点击就能弄坏配置，这个代价不该付。
+    if value:
+        expanded = os.path.expanduser(os.path.expandvars(value))
+        if not Path(expanded).is_file():
+            raise HTTPException(
+                status_code=400,
+                detail=f"nanoghost_program 指向的文件不存在: {expanded}",
+            )
+    raw = read_raw_yaml(CONFIG_PATH)
+    try:
+        validate_yaml_mapping(raw)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"config.yaml 解析不了，先修好它：{e}")
+
+    out: list[str] = []
+    replaced = False
+    for line in raw.splitlines():
+        if re.match(r"^\s*nanoghost_program\s*:", line):
+            replaced = True
+            if value:
+                # YAML 单引号串里 ' 要写成 ''，否则路径带撇号就会把文件写坏
+                out.append(f"nanoghost_program: '{value.replace(chr(39), chr(39) * 2)}'")
+            continue
+        out.append(line)
+    if value and not replaced:
+        out.append(f"nanoghost_program: '{value.replace(chr(39), chr(39) * 2)}'")
+
+    try:
+        write_raw_yaml(CONFIG_PATH, "\n".join(out).rstrip() + "\n")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # 写完立刻解析一次：路径指不到文件时 _locate_nanoghost_program 会抛 400，
+    # 当场告诉用户。等他点了升级才发现配置没生效，是最难查的一类问题。
+    info = nanoghost_upgrade.info()
+    if not info.get("ok"):
+        raise HTTPException(status_code=400, detail=info.get("error") or "配置后仍然找不到 NanoGhost 程序")
+    return info
 

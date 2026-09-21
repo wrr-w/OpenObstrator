@@ -25,6 +25,8 @@ node_modules/
 # build artifacts
 build/
 dist/
+dist.7z
+*.bak
 server/static/g6.min.js
 
 # runtime files

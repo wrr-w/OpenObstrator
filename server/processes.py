@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -41,6 +42,48 @@ def kill_pid_tree(pid: int) -> None:
         text=True,
         check=False,
     )
+
+
+def _norm_path(p) -> str:
+    try:
+        return os.path.normcase(os.path.abspath(str(p)))
+    except Exception:
+        return ""
+
+
+def find_nanoghost_processes(exe_path=None) -> list[dict]:
+    """列出本机正在跑的 NanoGhost 进程。
+
+    升级要覆盖某个**具体目录**里的 exe，所以先按可执行文件路径精确匹配 ——
+    停错进程等于白停（文件仍被占用，覆盖脚本报 FAIL:copy）。返回项里的 exe 可能
+    是空串：进程属于别的账号时 psutil 读不到路径（AccessDenied），这种情况只有
+    exe_path=None 的机器级扫描才认得出来。
+
+    exe_path=None 时退化成"凡是叫 NanoGhost.exe 的都算" —— 用来抓注册簿里没有
+    记录的野进程。这一档是机器级的，会连别的安装目录一起抓。
+    """
+    import psutil
+
+    want = _norm_path(exe_path) if exe_path else ""
+    out: list[dict] = []
+    for proc in psutil.process_iter(["pid", "name", "exe"]):
+        try:
+            info = proc.info or {}
+            pid = int(info.get("pid") or 0)
+            if not pid or pid == os.getpid():
+                continue
+            exe = str(info.get("exe") or "")
+            name = str(info.get("name") or "")
+            if want:
+                if not exe or _norm_path(exe) != want:
+                    continue
+            elif name.lower() != "nanoghost.exe":
+                continue
+            out.append({"pid": pid, "exe": exe, "name": name})
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    out.sort(key=lambda x: x["pid"])
+    return out
 
 
 @dataclass(frozen=True)

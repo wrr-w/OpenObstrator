@@ -54,6 +54,10 @@ a = Analysis(
         "server.hermes_mcp",
         "server.logbuffer",
         "server.nanoghost_mcp",
+        # 升级 / 安装：这两个是 app.py 在导入期 configure() 的对象，少了它们
+        # 打出来的 exe 会在启动时 ImportError（dev 下永远看不出来）
+        "server.nanoghost_upgrade",
+        "server.releases",
         "server.ports",
         "server.processes",
         "server.profiles",

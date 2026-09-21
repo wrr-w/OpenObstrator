@@ -211,6 +211,42 @@ async function ngMcpTools(name, serverId) {
   )
 }
 
+// NanoGhost 升级 / 安装
+// info 不打网络（只做本地解析 + --version），check 才去问 GitHub —— 所以是两个
+// 调用而不是一个。弹窗打开时只能走 info，否则网络不通时弹窗要卡十几秒。
+async function ngUpdateInfo() {
+  return apiJson("/api/nanoghost/update/info", { method: "GET" })
+}
+
+async function ngUpdateCheck(force) {
+  return apiJson(`/api/nanoghost/update/check${force ? "?force=true" : ""}`, { method: "GET" })
+}
+
+async function ngUpdateStatus() {
+  return apiJson("/api/nanoghost/update/status", { method: "GET" })
+}
+
+async function ngUpdateStart(restart) {
+  return apiJson("/api/nanoghost/update/start", {
+    method: "POST",
+    body: JSON.stringify({ restart: Boolean(restart) }),
+  })
+}
+
+async function ngInstallStart(restart) {
+  return apiJson("/api/nanoghost/install/start", {
+    method: "POST",
+    body: JSON.stringify({ restart: Boolean(restart) }),
+  })
+}
+
+async function ngUpdateProgramPut(path) {
+  return apiJson("/api/nanoghost/update/program", {
+    method: "PUT",
+    body: JSON.stringify({ path: path || "" }),
+  })
+}
+
 // NanoGhost Memory
 async function loadNgMemoryRaw(name) {
   return apiJson(`/api/instances/nanoghost/${encodeURIComponent(name)}/memory/raw`, { method: "GET" })

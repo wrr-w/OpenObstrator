@@ -629,11 +629,10 @@ function openTemplateMgrModal(initialRuntime, initialTemplateId) {
 
         for (const [gPath, items] of Object.entries(groups)) {
           const cat = gPath.includes("/") ? gPath.split("/").pop().trim() : gPath
-          const rows = []
-          for (const it of items) {
-            if (cat && it.name === cat && items.length > 1) continue
-            rows.push(it)
-          }
+          // 分组入口行留着 —— 理由和 panels.js 里同款：NanoGhost 把分组目录自己的
+          // SKILL.md 也注册成一个技能（名字取目录名），模型拿到的导航提示是
+          // `use_skill(name="分组名")`。这个名字不在白名单里，整组就展不开。
+          const rows = items
           if (rows.length === 0) continue
           if (rows.length === 1) { flatItems.push(rows[0]); continue }
           const block = document.createElement("div")

@@ -450,7 +450,7 @@ async function refreshPrompts() {
       header.style.gap = "8px"
       header.style.padding = "4px 0"
       const arrow = document.createElement("span")
-      arrow.textContent = "\u25b6"
+      arrow.textContent = "▶"
       arrow.style.fontSize = "11px"
       const nameSpan = document.createElement("span")
       nameSpan.style.fontWeight = "700"
@@ -459,6 +459,12 @@ async function refreshPrompts() {
       header.appendChild(nameSpan)
       block.appendChild(header)
 
+      // Markdown 渲染预览（非编辑态显示）
+      const mdPreview = document.createElement("div")
+      mdPreview.style.cssText = "font-size:13px;line-height:1.7;padding:8px 4px;display:none;word-break:break-word"
+      block.appendChild(mdPreview)
+
+      // 编辑用 textarea（编辑态显示）
       const editor = document.createElement("div")
       editor.style.display = "none"
       const ta = document.createElement("textarea")
@@ -494,23 +500,53 @@ async function refreshPrompts() {
 
       let isEditing = false
       let originalContent = ""
+      let rendered = false
+
+      function renderPreview() {
+        const raw = ta.value || ""
+        if (raw.trim() && typeof marked !== "undefined") {
+          mdPreview.innerHTML = marked.parse(raw)
+        } else {
+          mdPreview.textContent = raw
+        }
+      }
+
+      async function loadContent() {
+        const data = await apiJson(`/api/instances/${encodeURIComponent(rt)}/${encodeURIComponent(name)}/prompts/${encodeURIComponent(f.name)}`, { method: "GET" })
+        ta.value = data.raw || ""
+        originalContent = ta.value
+        rendered = true
+        renderPreview()
+      }
+
+      function showPreview() {
+        mdPreview.style.display = ""
+        editor.style.display = "none"
+        ta.readOnly = true
+      }
+
+      function showEditor() {
+        mdPreview.style.display = "none"
+        editor.style.display = ""
+      }
 
       editBtn.addEventListener("click", async () => {
         if (!isEditing) {
-          const data = await apiJson(`/api/instances/${encodeURIComponent(rt)}/${encodeURIComponent(name)}/prompts/${encodeURIComponent(f.name)}`, { method: "GET" })
-          ta.value = data.raw || ""
+          if (!rendered) await loadContent()
+          showEditor()
           ta.readOnly = false
-          originalContent = ta.value
           isEditing = true
           editBtn.textContent = "取消"
           saveBtn.style.display = ""
           cancelBtn.style.display = "none"
         } else {
           ta.value = originalContent
-          ta.readOnly = true
           isEditing = false
           editBtn.textContent = "编辑"
           saveBtn.style.display = "none"
+          cancelBtn.style.display = "none"
+          renderPreview()
+          showPreview()
         }
       })
 
@@ -522,26 +558,40 @@ async function refreshPrompts() {
             body: JSON.stringify({ raw: ta.value }),
           })
           originalContent = ta.value
-          ta.readOnly = true
           isEditing = false
           editBtn.textContent = "编辑"
           saveBtn.style.display = "none"
+          cancelBtn.style.display = "none"
+          renderPreview()
+          showPreview()
           setToast("已保存")
         } catch (e) {
           setToast(String(e))
         }
       })
 
-      header.addEventListener("click", () => {
-        const isOpen = editor.style.display !== "none"
-        editor.style.display = isOpen ? "none" : ""
-        btnRow.style.display = isOpen ? "none" : ""
-        arrow.textContent = isOpen ? "\u25b6" : "\u25bc"
-        if (!isOpen && !ta.value) {
-          apiJson(`/api/instances/${encodeURIComponent(rt)}/${encodeURIComponent(name)}/prompts/${encodeURIComponent(f.name)}`, { method: "GET" }).then(data => {
-            ta.value = data.raw || ""
-            originalContent = ta.value
-          }).catch(() => {})
+      header.addEventListener("click", async () => {
+        const isOpen = editor.style.display !== "none" || mdPreview.style.display !== "none"
+        if (isOpen) {
+          editor.style.display = "none"
+          mdPreview.style.display = "none"
+          btnRow.style.display = "none"
+          arrow.textContent = "▶"
+        } else {
+          if (!rendered) {
+            try {
+              await loadContent()
+            } catch (e) {
+              setToast(String(e))
+            }
+          }
+          if (isEditing) {
+            showEditor()
+          } else {
+            showPreview()
+          }
+          btnRow.style.display = ""
+          arrow.textContent = "▼"
         }
       })
 
@@ -610,12 +660,12 @@ async function refreshSkills() {
   }
   for (const [gPath, items] of Object.entries(groups)) {
     const cat = gPath.includes("/") ? gPath.split("/").pop().trim() : gPath
-    // 收集非父节点行
-    const rows = []
-    for (const it of items) {
-      if (cat && it.name === cat && items.length > 1) continue
-      rows.push(it)
-    }
+    // 分组入口行**留着**，别当"父节点"跳掉。NanoGhost 把分组目录自己的 SKILL.md 也
+    // 注册成一个技能（名字取目录名），而 system prompt 里给模型的就是
+    // `use_skill(name="分组名")` —— 子技能名根本不在上下文里。所以白名单里少这一个名字，
+    // 整组就够不着，而且全程不报错。以前这里 `it.name === cat` 就 continue，于是这个
+    // 名字面板永远勾不到，只能靠手改 config.yaml。
+    const rows = items
     // 0 行 → 跳过; 1 行 → 扁平显示; >1 行 → 折叠组
     if (rows.length === 0) continue
     if (rows.length === 1) {
@@ -803,23 +853,14 @@ async function refreshNanoGhostMcp() {
         
         for (const a of actions) {
           const tr = document.createElement("tr")
-          const tdCb = document.createElement("td")
           const tdName = document.createElement("td")
-          
-          const cb = document.createElement("input")
-          cb.type = "checkbox"
-          cb.className = "mcpActCb"
-          cb.dataset.serverId = sid
-          cb.dataset.actionName = a
-          cb.checked = (allEnabled || allowedSet.has(a)) && serverEnabled
+          tdName.style.paddingLeft = "24px"
           
           const code = document.createElement("code")
           code.textContent = a
           code.style.fontSize = "12px"
           
-          tdCb.appendChild(cb)
           tdName.appendChild(code)
-          tr.appendChild(tdCb)
           tr.appendChild(tdName)
           tbdy.appendChild(tr)
         }
@@ -855,7 +896,6 @@ async function refreshNanoGhostMcp() {
     saveBtn.textContent = "保存"
     saveBtn.addEventListener("click", async () => {
       const enabledServers = []
-      const actionAllowlistSave = {}
       
       for (const block of Array.from(body.children)) {
         if (block === saveRow) continue
@@ -866,19 +906,11 @@ async function refreshNanoGhostMcp() {
         
         if (headerCb.checked) {
           enabledServers.push(sid)
-          const checkedActions = []
-          for (const cb of Array.from(block.querySelectorAll(".mcpActCb"))) {
-            if (cb.checked) checkedActions.push(cb.dataset.actionName)
-          }
-          if (checkedActions.length > 0) {
-            actionAllowlistSave[sid] = checkedActions
-          }
         }
       }
       
       try {
         await ngMcpAllowlistPut(name, enabledServers)
-        await ngMcpActionAllowlistPut(name, actionAllowlistSave)
         setToast("MCP 已保存 ✅ 需重启实例生效")
         await refreshNanoGhostMcp()
       } catch (e) {

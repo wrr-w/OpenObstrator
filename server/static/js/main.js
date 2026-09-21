@@ -139,6 +139,7 @@ function bindActions() {
   const globalManagerConfig = document.getElementById("globalManagerConfig")
   const globalRegistry = document.getElementById("globalRegistry")
   const globalLogs = document.getElementById("globalLogs")
+  const globalUpdate = document.getElementById("globalUpdate")
   const createBtn = document.getElementById("createProfile")
   const search = document.getElementById("profileSearch")
 
@@ -156,6 +157,10 @@ function bindActions() {
   if (globalManagerConfig) globalManagerConfig.addEventListener("click", () => window.open("/pages/manager-config", "_blank"))
   if (globalRegistry) globalRegistry.addEventListener("click", () => window.open("/pages/global-registry", "_blank"))
   if (globalLogs) globalLogs.addEventListener("click", () => window.open("/pages/logs", "_blank"))
+  // 升级 / 安装走弹窗而不是新页面：它是"看一眼、点一下、看进度"的短交互，
+  // 而且状态活在服务端（后台线程），开新页面反而要处理刷新和失联
+  if (globalUpdate)
+    globalUpdate.addEventListener("click", () => openNanoghostUpdateModal())
 
   // Batch start/stop all NanoGhost instances
   const batchStart = document.getElementById("batchStartAll")
@@ -437,6 +442,21 @@ function bindActions() {
       try {
         setToast("")
         await svcStop(rt, name, "gateway")
+        await refreshServices()
+        await refreshSidebar(document.getElementById("profileSearch")?.value || "")
+      } catch (e) {
+        setToast(String(e))
+      }
+    })
+  const gwRestartBtn = document.getElementById("gwRestart")
+  if (gwRestartBtn)
+    gwRestartBtn.addEventListener("click", async () => {
+      const rt = _activeRuntime
+      const name = _activeName
+      if (!rt || !name) return
+      try {
+        setToast("")
+        await svcRestart(rt, name, "gateway")
         await refreshServices()
         await refreshSidebar(document.getElementById("profileSearch")?.value || "")
       } catch (e) {
