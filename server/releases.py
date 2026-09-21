@@ -133,7 +133,8 @@ def cached_latest() -> dict | None:
         return dict(data) if data else None
 
 
-def _pick_assets(assets: list[tuple[str, str]], prefix: str) -> tuple[str, str, str, str]:
+def _pick_assets(assets: list[tuple[str, str, int, str]], prefix: str
+                 ) -> tuple[str, str, str, str, int, str]:
     """按 update.py:_check_github 的规则挑包，返回 (zip_name, zip_url, exe_name, exe_url)。
 
     zip 的挑选**必须**保留"挑不到前缀就退回第一个 .zip"这条兜底 —— 那是程序自己的
@@ -145,23 +146,25 @@ def _pick_assets(assets: list[tuple[str, str]], prefix: str) -> tuple[str, str, 
     """
     zip_name = zip_url = ""
     if prefix:
-        for name, url in assets:
+        for name, url, _size, _dig in assets:
             if url and name.endswith(".zip") and name.startswith(prefix):
                 zip_name, zip_url = name, url
                 break
     if not zip_url:
-        for name, url in assets:
+        for name, url, _size, _dig in assets:
             if url and name.endswith(".zip"):
                 zip_name, zip_url = name, url
                 break
 
     exe_name = exe_url = ""
-    for name, url in assets:
+    exe_size = 0
+    exe_digest = ""
+    for name, url, size, dig in assets:
         if url and name.endswith(".exe") and name.startswith(INSTALLER_PREFIX):
-            exe_name, exe_url = name, url
+            exe_name, exe_url, exe_size, exe_digest = name, url, size, dig
             break
 
-    return zip_name, zip_url, exe_name, exe_url
+    return zip_name, zip_url, exe_name, exe_url, exe_size, exe_digest
 
 
 def _rate_limit_hint(resp: httpx.Response) -> str:
@@ -252,16 +255,19 @@ def _fetch_remote(repo: str, prefix: str, cfg: dict, timeout: float) -> dict:
         raise ReleaseError(f"release {data.get('name') or ''} 没有 tag_name，拿不到版本号。")
 
     assets = [
-        (str(a.get("name") or "").lower(), str(a.get("browser_download_url") or ""))
+        (str(a.get("name") or "").lower(),
+         str(a.get("browser_download_url") or ""),
+         int(a.get("size") or 0),
+         str(a.get("digest") or ""))
         for a in (data.get("assets") or [])
         if isinstance(a, dict)
     ]
-    zip_name, zip_url, exe_name, exe_url = _pick_assets(assets, prefix)
+    zip_name, zip_url, exe_name, exe_url, exe_size, exe_digest = _pick_assets(assets, prefix)
 
     if not zip_url and not exe_url:
         raise ReleaseError(
             f"release {tag} 里既没有 .zip 升级包也没有安装包，没法用。"
-            f"（资产：{', '.join(n for n, _ in assets) or '空'}）"
+            f"（资产：{', '.join(n for n, *_ in assets) or '空'}）"
         )
 
     return {
@@ -272,6 +278,8 @@ def _fetch_remote(repo: str, prefix: str, cfg: dict, timeout: float) -> dict:
         "zip_url": _apply_download_base(zip_url, cfg) if zip_url else "",
         "installer_name": exe_name,
         "installer_url": _apply_download_base(exe_url, cfg) if exe_url else "",
+        "installer_size": exe_size,
+        "installer_digest": exe_digest,
         "notes": str(data.get("body") or "")[:2000],
         "published_at": str(data.get("published_at") or ""),
         "html_url": str(data.get("html_url") or ""),

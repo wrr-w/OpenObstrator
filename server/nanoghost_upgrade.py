@@ -18,6 +18,7 @@ configure() 注入。测试也走同一个注入口。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -304,6 +305,7 @@ def _run(argv: list[str], *, env: dict | None = None, timeout: float = CMD_TIMEO
             timeout=timeout, env=env, errors="replace",
             stdin=subprocess.DEVNULL,   # 别让子进程等 stdin：曾因 NanoGhost.exe update --check
                                         # 末尾的 input("按任意键退出") 而空等 180s 超时
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # 别再闪控制台窗口
         )
     except subprocess.TimeoutExpired:
         return 124, f"命令超时（{int(timeout)} 秒）: {' '.join(argv)}"
@@ -333,16 +335,53 @@ def _parse_json_line(text: str) -> dict | None:
     return None
 
 
-def _read_version(prog: Path) -> str:
-    """读程序的版本号。离线操作 —— UPDATING.md 确认 --version 不联网。"""
-    rc, out = _run([str(prog), "--version"], timeout=30)
-    if rc != 0:
+def _pe_file_version(prog: Path) -> str:
+    """从 PE 版本资源里读 FileVersion（走 version.dll，**不启动进程**）。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        size = ctypes.windll.version.GetFileVersionInfoSizeW(str(prog), None)
+        if not size:
+            return ""
+        buf = ctypes.create_string_buffer(size)
+        if not ctypes.windll.version.GetFileVersionInfoW(str(prog), 0, size, buf):
+            return ""
+        val = ctypes.c_void_p()
+        length = wintypes.UINT()
+        if not ctypes.windll.version.VerQueryValueW(
+                buf, "\\", ctypes.byref(val), ctypes.byref(length)) or not val:
+            return ""
+
+        class _FixedFileInfo(ctypes.Structure):
+            _fields_ = [("dwSignature", wintypes.DWORD),
+                        ("dwStrucVersion", wintypes.DWORD),
+                        ("dwFileVersionMS", wintypes.DWORD),
+                        ("dwFileVersionLS", wintypes.DWORD)]
+
+        info = ctypes.cast(val, ctypes.POINTER(_FixedFileInfo)).contents
+        ms, ls = info.dwFileVersionMS, info.dwFileVersionLS
+        return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+    except Exception:                     # noqa: BLE001 - 读不到就退回空串
         return ""
-    for line in (out or "").splitlines():
-        line = line.strip()
-        if line and line[0].isdigit():
-            return line
-    return ""
+
+
+def _read_version(prog: Path) -> str:
+    """读程序的版本号。**不启动进程**。
+
+    历史实现是 `NanoGhost.exe --version`：它是个控制台程序，末尾还有
+    input("按任意键退出")，每 spawn 一次都要跟它抢 stdin、还闪一个控制台窗口
+    （见 _run 的注释）。版本号本来就在文件里 —— 直接读，最快也最稳。
+    """
+    for cand in (prog.parent / "_internal" / "VERSION", prog.parent / "VERSION"):
+        try:
+            if cand.is_file():
+                v = cand.read_text(encoding="utf-8", errors="ignore").strip()
+                if v:
+                    return v.lstrip("vV")
+        except OSError:
+            pass
+    return _pe_file_version(prog)
 
 
 def _env_for_update() -> dict:
@@ -646,7 +685,8 @@ def _strip_zone_identifier(path: Path) -> None:
         pass
 
 
-def _download(url: str, dest: Path, st: dict) -> None:
+def _download(url: str, dest: Path, st: dict, *,
+              expected_size: int = 0, expected_sha256: str = "") -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".part")
     if tmp.exists():
@@ -687,6 +727,21 @@ def _download(url: str, dest: Path, st: dict) -> None:
         tmp.unlink(missing_ok=True)
         raise UpgradeError("下载到的不是 Windows 可执行文件（开头不是 MZ）。"
                            "多半是网络中间返回了错误页，稍后重试。")
+
+    # 官方 release 带 size + sha256(digest)，逐字节对上再放行 —— 半截包、被中间设备
+    # 换过的包在这里就拦下，而不是等安装器几秒后莫名退出、还什么都不说。
+    if expected_size and got != expected_size:
+        tmp.unlink(missing_ok=True)
+        raise UpgradeError(
+            f"下载不完整：拿到 {got} 字节，官方是 {expected_size} 字节"
+            f"（差 {expected_size - got}）。网络中断或被代理改写，请重试。")
+    if expected_sha256:
+        digest = hashlib.sha256(tmp.read_bytes()).hexdigest()
+        if digest != expected_sha256:
+            tmp.unlink(missing_ok=True)
+            raise UpgradeError(
+                f"安装包 sha256 校验失败：本地 {digest[:12]}…，官方 {expected_sha256[:12]}…。"
+                f"包已损坏或被篡改，已丢弃。")
 
     tmp.replace(dest)
     _strip_zone_identifier(dest)
@@ -809,12 +864,26 @@ def _do_install(st: dict, restart: bool) -> None:
         raise UpgradeError(msg)
 
     dest = downloads / str(rel.get("installer_name") or f"NanoGhostSetup-{version}.exe")
+    expect_size = int(rel.get("installer_size") or 0)
+    expect_digest = str(rel.get("installer_digest") or "")
+    if expect_digest.startswith("sha256:"):
+        expect_digest = expect_digest.split(":", 1)[1]
+
+    cached_ok = False
     if dest.is_file() and dest.stat().st_size > 1024 * 1024:
-        _log(st, f"复用已经下载过的安装包: {dest}")
+        if expect_size and dest.stat().st_size != expect_size:
+            _log(st, f"缓存包大小不符（{dest.stat().st_size} ≠ {expect_size}），重下")
+        elif expect_digest and hashlib.sha256(dest.read_bytes()).hexdigest() != expect_digest:
+            _log(st, "缓存包 sha256 不符，重下")
+        else:
+            cached_ok = True
+    if cached_ok:
+        _log(st, f"复用已经下载过的安装包（已校验）: {dest}")
     else:
         _set_phase(st, PHASE_APPLYING, "正在下载安装包…", progress=0)
-        _download(str(rel["installer_url"]), dest, st)
-        _log(st, f"安装包已下载: {dest}")
+        _download(str(rel["installer_url"]), dest, st,
+                  expected_size=expect_size, expected_sha256=expect_digest)
+        _log(st, f"安装包已下载并校验: {dest}")
 
     old_prog, _ = _ctx("locate_program")()
     gateways = _stop_programs(st, Path(old_prog) if old_prog else None)
@@ -826,12 +895,14 @@ def _do_install(st: dict, restart: bool) -> None:
         str(dest),
         "/VERYSILENT",          # 无界面
         "/SUPPRESSMSGBOXES",    # 一个框都不弹，否则会挂在那里等按键
+        "/SP-",                 # 跳过「要安装吗？」确认页
         "/NORESTART",           # 重启时机由控制台定，不是由安装器
-        "/NOCANCEL",            # 不给中途取消的机会（静默安装没有可看的进度）
         "/NOCLOSEAPPLICATIONS", # 不让 Inno 用 Restart Manager 去关程序：它关不掉时
                                 # 在静默模式下会直接 abort（实测 exit 1）。停程序由上面
                                 # 的 _stop_programs 负责，这里只负责把文件覆盖下去。
-        f'/LOG="{install_log}"',
+        f"/LOG={install_log}",  # **不要自带引号**：以列表传参时 Python 会自己加引号，
+                                # 内嵌的引号会变成路径的一部分 → Inno 打不开日志 →
+                                # 静默模式下直接 abort（表现就是几秒内退出码 1 且没有日志）。
     ]
     _log(st, "运行安装包: " + " ".join(argv))
     t0 = time.time()
@@ -842,15 +913,22 @@ def _do_install(st: dict, restart: bool) -> None:
         _log(st, out.strip()[:500])
 
     if rc != 0:
-        if elapsed < 3:
-            raise UpgradeError(
-                f"安装包刚启动就退出了（{elapsed:.1f} 秒，退出码 {rc}）。这种形态基本"
-                f"都是被安全软件 / SmartScreen 拦掉了，安装包本身没跑起来。"
-                f"查看 {install_log} 和系统的安全中心记录。")
+        # 不再猜「杀软 / 权限」—— 直接把证据摆出来：日志在不在、末尾写了什么。
+        tail = ""
+        if install_log.is_file():
+            try:
+                tail = "\n".join(
+                    install_log.read_text(encoding="utf-8", errors="replace")
+                    .splitlines()[-15:])
+            except OSError:
+                tail = ""
+            hint = "安装日志末尾（真实原因在最后几行）："
+        else:
+            hint = ("安装器在 Inno 初始化前就退出了（一行日志都没写）：多半是被安全"
+                    "软件 / EDR 拦下，或包被隔离；也可能是安装包不是有效的 Inno 可执行文件。")
         raise UpgradeError(
-            f"安装包以退出码 {rc} 结束（耗时 {elapsed:.1f} 秒）。常见原因是这个程序"
-            f"之前装在全机器目录（Program Files）里，而这次是普通权限 —— 请用管理员"
-            f"身份运行控制台再装一次。安装日志: {install_log}")
+            f"安装包以退出码 {rc} 结束（耗时 {elapsed:.1f} 秒）。{hint}\n"
+            f"日志: {install_log}\n{tail}")
 
     # 装完**必须重新解析**：安装目录可能和之前不一样（比如从源码 dist 换成了
     # %LOCALAPPDATA%），沿用旧路径会让界面显示一个已经不存在的位置。
@@ -878,10 +956,12 @@ def _runner(mode: str, restart: bool, lock: Path | None) -> None:
     global _THREAD
     st = _STATE
     try:
-        if mode == "install":
-            _do_install(st, restart)
-        else:
-            _do_update(st, restart)
+        # 「升级」和「下载并安装」现在走**同一条路**：都用官方 Inno 安装包做覆盖安装。
+        # 老的 update 模式（起 NanoGhost.exe update --yes → 分离式 .bat → 等进程退出
+        # → 轮询结果文件 240s）已停用：那条链会卡在 cmd 的「终止批处理操作吗(Y/N)?」
+        # 上（实测日志里刷了 20+ 次），还跟短命的控制台进程抢 stdin。
+        # installer-as-updater 才是稳的 —— 关旧进程、换文件、重启，全交给安装器。
+        _do_install(st, restart)
         with _STATE_LOCK:
             st["phase"] = PHASE_DONE
             st["step"] = "完成"
