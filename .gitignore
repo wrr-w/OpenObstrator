@@ -1,4 +1,4 @@
-__pycache__/
+﻿__pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
@@ -28,8 +28,8 @@ dist/
 dist.7z
 dist_data_bak/
 scripts/_version_info.txt
-# 运行期数据不进仓库（config.yaml / registry.json / downloads / 纳管实例 / .env）。
-# 保留 .gitkeep 让目录存在，源码构建（build.spec 打包 data/）才不会挂。
+# 杩愯鏈熸暟鎹笉杩涗粨搴擄紙config.yaml / registry.json / downloads / 绾崇瀹炰緥 / .env锛夈€?
+# 淇濈暀 .gitkeep 璁╃洰褰曞瓨鍦紝婧愮爜鏋勫缓锛坆uild.spec 鎵撳寘 data/锛夋墠涓嶄細鎸傘€?
 data/
 !data/.gitkeep
 *.bak
