@@ -28,6 +28,10 @@ dist/
 dist.7z
 dist_data_bak/
 scripts/_version_info.txt
+# 运行期数据不进仓库（config.yaml / registry.json / downloads / 纳管实例 / .env）。
+# 保留 .gitkeep 让目录存在，源码构建（build.spec 打包 data/）才不会挂。
+data/
+!data/.gitkeep
 *.bak
 server/static/g6.min.js
 
