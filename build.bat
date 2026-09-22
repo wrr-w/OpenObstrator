@@ -15,7 +15,11 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 echo [1/2] Cleaning previous build...
-if exist "dist" rmdir /S /Q "dist"
+rem 只删构建产物，**不要动 dist\data** —— 那是运行期数据
+rem （config.yaml / registry.json / downloads / 纳管实例），删了要出事。
+if exist "dist\OpenObstrator.exe" del /Q "dist\OpenObstrator.exe"
+if exist "dist\installer" rmdir /S /Q "dist\installer"
+if exist "dist\release" rmdir /S /Q "dist\release"
 if exist "build" rmdir /S /Q "build"
 
 echo.
