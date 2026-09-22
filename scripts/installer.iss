@@ -64,7 +64,9 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; 去掉 skipifsilent：自更新是静默安装，装完必须由安装器把新版本拉起来 ——
+; 这正是「更新完自动重启」那一步。交互安装时它同时是完成页的"立即启动"勾选框。
+Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Flags: nowait postinstall
 
 ; 说明：运行期数据（data\ 下的 registry.json、downloads\ 等）不由安装程序创建，
 ; 卸载时不会被动；只有本安装包落下去的 config.yaml(onlyifdoesntexist) 会随卸载移除。

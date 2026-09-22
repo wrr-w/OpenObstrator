@@ -45,6 +45,7 @@ from server.soulfile import read_raw_text, write_raw_text
 from server.skills import list_global_skills_runtime
 from server.skills import list_skills, list_skills_nanoghost, scan_group_meta, set_skill_enabled, set_skill_enabled_nanoghost
 from server import nanoghost_upgrade
+from server import self_update
 from server.settings import load_app_config
 from server.settings import locate_nanoghost_program
 from server.settings import resolve_hermes_root
@@ -2951,5 +2952,39 @@ def nanoghost_update_program_put(body: NanoGhostProgramBody):
     info = nanoghost_upgrade.info()
     if not info.get("ok"):
         raise HTTPException(status_code=400, detail=info.get("error") or "配置后仍然找不到 NanoGhost 程序")
+    return info
+
+
+# ---------------------------------------------------------------- OpenObstrator 自更新
+# 「自己升级自己」：查自己的 release → 下安装器 → 启动 → 本进程退出，
+# 由安装器覆盖安装并把新版本拉起来。见 server/self_update.py。
+
+@app.get("/api/self/update/check")
+def self_update_check():
+    """查 OpenObstrator 自身是否有新版本。只读，不下载不改动。"""
+    return self_update.check(CONFIG_PATH)
+
+
+@app.post("/api/self/update/start")
+def self_update_start():
+    """下载新安装器并启动；随后本进程主动退出，把 exe 让给安装器。
+
+    返回体先发出去（前端能看到"已开始升级"），2.5 秒后再 os._exit —— 这点延迟
+    是留给响应写回的，不是留给安装器的（安装器是 detached 的，不依赖我们活着）。
+    """
+    data_dir = CONFIG_PATH.parent
+    info = self_update.start(downloads_dir=data_dir / "downloads", log_dir=data_dir,
+                             config_path=CONFIG_PATH)
+    if info.get("started"):
+        import os as _os
+        import threading
+        import time
+
+        def _bye() -> None:
+            time.sleep(2.5)
+            logger.warning("self-update: exiting so installer can replace files")
+            _os._exit(0)
+
+        threading.Thread(target=_bye, daemon=True).start()
     return info
 
